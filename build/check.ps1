@@ -97,6 +97,18 @@ foreach ($pyFile in $pyFiles) {
         throw "Ошибка компиляции синтаксиса Python в файле: $($pyFile.FullName)"
     }
 }
+Write-Output "Запуск модульных тестов Python (unittest)..."
+$prevPythonPath = $env:PYTHONPATH
+try {
+    $env:PYTHONPATH = (Join-Path -Path $repoRoot -ChildPath 'addon')
+    & python -m unittest discover -s (Join-Path -Path $repoRoot -ChildPath 'addon/crowdanki_v2/tests') -v
+    if ($LASTEXITCODE -ne 0) {
+        throw "Модульные тесты Python завершились с ошибкой (код: $LASTEXITCODE)"
+    }
+} finally {
+    $env:PYTHONPATH = $prevPythonPath
+}
+
 $addonPycache = Get-ChildItem -Path (Join-Path -Path $repoRoot -ChildPath 'addon') -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue
 foreach ($cacheDir in $addonPycache) {
     Remove-Item -LiteralPath $cacheDir.FullName -Recurse -Force
@@ -140,6 +152,7 @@ if (-not $SkipBuild) {
 }
 
 Write-Output "`n=== Все проверки проекта успешно пройдены! ==="
+
 
 
 
