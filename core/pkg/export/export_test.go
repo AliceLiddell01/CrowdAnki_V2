@@ -147,6 +147,18 @@ func TestExport_RichFixtureAndInvariants(t *testing.T) {
 		t.Errorf("ожидалось 2 карточки для note_guid_multi_cards, получено %d", multiCardsCount)
 	}
 
+	// 1.1. Проверка notes.jsonl: чистый HTML без экранирования \u003c
+	notesData, err := os.ReadFile(filepath.Join(destDir, "notes.jsonl"))
+	if err != nil {
+		t.Fatalf("ошибка чтения notes.jsonl: %v", err)
+	}
+	if !bytes.Contains(notesData, []byte("<b>猫</b>")) {
+		t.Errorf("notes.jsonl должен содержать чистый неэкранированный HTML <b>猫</b>")
+	}
+	if bytes.Contains(notesData, []byte(`\u003c`)) {
+		t.Errorf("notes.jsonl не должен содержать HTML escape последовательностей \\u003c")
+	}
+
 	// 2. Проверка decks.json: parent_id hierarchy (root -> child -> grandchild)
 	decksData, err := os.ReadFile(filepath.Join(destDir, "decks.json"))
 	if err != nil {

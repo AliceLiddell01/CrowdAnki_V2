@@ -13,14 +13,22 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from aqt.operations import QueryOp
-from aqt.qt import (
-    QFileDialog,
-    QGroupBox,
-    QLabel,
-    QVBoxLayout,
-)
-from aqt.utils import showWarning
+try:
+    from aqt.operations import QueryOp
+    from aqt.qt import (
+        QFileDialog,
+        QGroupBox,
+        QLabel,
+        QVBoxLayout,
+    )
+    from aqt.utils import showWarning
+except ImportError:
+    QueryOp = None  # type: ignore[assignment]
+    QFileDialog = None  # type: ignore[assignment]
+    QGroupBox = None  # type: ignore[assignment]
+    QLabel = None  # type: ignore[assignment]
+    QVBoxLayout = None  # type: ignore[assignment]
+    showWarning = None  # type: ignore[assignment]
 
 from .collector import get_deck_and_child_ids
 from .exporter import CrowdAnkiExporter
@@ -34,6 +42,47 @@ if TYPE_CHECKING:
 logger = logging.getLogger("crowdanki_v2")
 
 
+def validate_destination_directory(
+    dest_path: str,
+    pm_base: str | None = None,
+) -> str | None:
+    """Проверяет безопасность и допустимость выбранного каталога для экспорта.
+
+    Возвращает текст предупреждения пользователю, если каталог недопустим,
+    либо None, если каталог безопасен для экспорта.
+    """
+    clean_path = os.path.normpath(dest_path)
+
+    # 1. Защита от экспорта внутрь системного каталога профиля Anki
+    if pm_base:
+        base = os.path.realpath(pm_base)
+        if os.path.realpath(clean_path).startswith(base + os.sep):
+            return (
+                "Пожалуйста, выберите другое место экспорта "
+                "(каталог профиля Anki защищен от записи)."
+            )
+
+    # 2. Проверка непустого каталога на наличие проекта CrowdAnki V2
+    if os.path.exists(clean_path):
+        try:
+            entries = os.listdir(clean_path)
+        except OSError as err:
+            return f"Не удалось прочитать каталог «{clean_path}»: {err}"
+
+        if entries:
+            marker = os.path.join(clean_path, "crowdanki.json")
+            if not os.path.exists(marker):
+                return (
+                    f"Каталог «{clean_path}» не пуст и не содержит проект CrowdAnki V2.\n\n"
+                    "Экспорт в стороннюю непустую папку запрещен для защиты "
+                    "от перезаписи файлов.\n\n"
+                    "Пожалуйста, выберите пустой каталог (или создайте новую папку для колоды) "
+                    "либо выберите существующий проект CrowdAnki V2 для обновления."
+                )
+
+    return None
+
+
 class ExportDialogAdapter:
     """Изолированный адаптер расширения возможностей ExportDialog для CrowdAnki V2."""
 
@@ -43,40 +92,31 @@ class ExportDialogAdapter:
         self.summary_label: QLabel | None = None
         self._current_request_id: int = 0
 
-        self._install_ui()
+        self._setup_ui()
         self._hook_dialog()
 
-    def _install_ui(self) -> None:
-        """Добавляет блок сводки под чекбоксами диалога экспорта."""
+    def _setup_ui(self) -> None:
+        """Встраивает блок предварительной сводки в интерфейс диалога."""
         layout = self.dialog.layout()
         if not layout:
             return
 
-        self.summary_box = QGroupBox("Будет экспортировано", self.dialog)
+        self.summary_box = QGroupBox("Будет экспортировано")
         box_layout = QVBoxLayout()
-        self.summary_label = QLabel("Подсчёт…", self.summary_box)
+        self.summary_label = QLabel("Подсчет данных...")
         box_layout.addWidget(self.summary_label)
         self.summary_box.setLayout(box_layout)
-        self.summary_box.setVisible(False)
 
-        # Находим позицию перед verticalSpacer или buttonBox
-        insert_idx = -1
-        for i in range(layout.count()):
-            item = layout.itemAt(i)
-            w = item.widget()
-            if w and w == self.dialog.frm.buttonBox:
-                insert_idx = i
-                break
-            elif item.spacerItem():
-                insert_idx = i
-                break
+        # Находим позицию вставки: перед buttonBox или перед нижней распоркой
+        insert_idx = layout.count()
+        if hasattr(self.dialog.frm, "buttonBox"):
+            btn_idx = layout.indexOf(self.dialog.frm.buttonBox)
+            if btn_idx >= 0:
+                insert_idx = btn_idx
 
-        if insert_idx >= 0:
-            layout.insertWidget(insert_idx, self.summary_box)
-        else:
-            layout.addWidget(self.summary_box)
+        layout.insertWidget(insert_idx, self.summary_box)
 
-        # Подписываемся на смену колоды и изменение чекбокса медиа
+        # Подключаем отслеживание изменений колоды и флага медиа
         self.dialog.frm.deck.currentIndexChanged.connect(self._on_options_changed)
         self.dialog.frm.includeMedia.stateChanged.connect(self._on_options_changed)
 
@@ -100,12 +140,13 @@ class ExportDialogAdapter:
                     if not dest_dir:
                         return None
                     dest_path = os.path.normpath(dest_dir)
-                    # Проверка безопасности пути против базы профиля Anki
-                    if hasattr(self.dialog.mw.pm, "base"):
-                        base = os.path.realpath(self.dialog.mw.pm.base)
-                        if os.path.realpath(dest_path).startswith(base + os.sep):
-                            showWarning("Please choose a different export location.")
-                            continue
+
+                    pm_base = getattr(self.dialog.mw.pm, "base", None)
+                    warning_msg = validate_destination_directory(dest_path, pm_base=pm_base)
+                    if warning_msg:
+                        showWarning(warning_msg, parent=self.dialog)
+                        continue
+
                     return dest_path
             return orig_get_out_path()
 

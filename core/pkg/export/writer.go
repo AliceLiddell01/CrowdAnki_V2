@@ -1,6 +1,7 @@
 package export
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,16 +117,13 @@ func WriteNotesJSONL(destDir string, notes []NoteDTO) error {
 		// Детерминированность тегов
 		sort.Strings(note.Tags)
 
-		lineBytes, err := json.Marshal(note)
+		lineBytes, err := marshalJSONNoEscapeHTML(note)
 		if err != nil {
 			return fmt.Errorf("ошибка сериализации заметки %s: %w", note.GUID, err)
 		}
 
 		if _, err := file.Write(lineBytes); err != nil {
 			return fmt.Errorf("ошибка записи notes.jsonl: %w", err)
-		}
-		if _, err := file.WriteString("\n"); err != nil {
-			return fmt.Errorf("ошибка записи перевода строки в notes.jsonl: %w", err)
 		}
 	}
 
@@ -155,7 +153,7 @@ func WriteCardsJSONL(destDir string, cards []CardDTO) error {
 	defer file.Close()
 
 	for _, card := range sortedCards {
-		lineBytes, err := json.Marshal(card)
+		lineBytes, err := marshalJSONNoEscapeHTML(card)
 		if err != nil {
 			return fmt.Errorf("ошибка сериализации карточки: %w", err)
 		}
@@ -163,12 +161,19 @@ func WriteCardsJSONL(destDir string, cards []CardDTO) error {
 		if _, err := file.Write(lineBytes); err != nil {
 			return fmt.Errorf("ошибка записи cards.jsonl: %w", err)
 		}
-		if _, err := file.WriteString("\n"); err != nil {
-			return fmt.Errorf("ошибка записи перевода строки в cards.jsonl: %w", err)
-		}
 	}
 
 	return file.Sync()
+}
+
+func marshalJSONNoEscapeHTML(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // WriteNoteTypes записывает каждый используемый тип заметки в отдельный JSON-файл в note_types/<id>.json.

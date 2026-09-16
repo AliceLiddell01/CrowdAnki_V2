@@ -34,6 +34,52 @@ class TestExportDialogAdapterLogic(unittest.TestCase):
         is_crowdanki = issubclass(exporter_classes[idx], CrowdAnkiExporter)
         self.assertFalse(is_crowdanki)
 
+    def test_validate_destination_directory_empty_dir(self):
+        import tempfile
+
+        from crowdanki_v2.dialog_adapter import validate_destination_directory
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            msg = validate_destination_directory(tmpdir)
+            self.assertIsNone(msg)
+
+    def test_validate_destination_directory_existing_project(self):
+        import os
+        import tempfile
+
+        from crowdanki_v2.dialog_adapter import validate_destination_directory
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "crowdanki.json"), "w", encoding="utf-8") as f:
+                f.write("{}")
+            msg = validate_destination_directory(tmpdir)
+            self.assertIsNone(msg)
+
+    def test_validate_destination_directory_non_empty_foreign(self):
+        import os
+        import tempfile
+
+        from crowdanki_v2.dialog_adapter import validate_destination_directory
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "some_file.txt"), "w", encoding="utf-8") as f:
+                f.write("test")
+            msg = validate_destination_directory(tmpdir)
+            self.assertIsNotNone(msg)
+            self.assertIn("не пуст и не содержит проект CrowdAnki V2", msg)
+
+    def test_validate_destination_directory_pm_base_protection(self):
+        import os
+        import tempfile
+
+        from crowdanki_v2.dialog_adapter import validate_destination_directory
+
+        with tempfile.TemporaryDirectory() as base_dir:
+            sub_dir = os.path.join(base_dir, "profile", "export")
+            msg = validate_destination_directory(sub_dir, pm_base=base_dir)
+            self.assertIsNotNone(msg)
+            self.assertIn("каталог профиля Anki защищен", msg)
+
 
 if __name__ == "__main__":
     unittest.main()

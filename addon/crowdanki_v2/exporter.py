@@ -38,7 +38,7 @@ except ImportError:
 
 
 from .collector import collect_export_data
-from .core_runner import run_core_export
+from .core_runner import CoreExecutionError, run_core_export
 from .summary import format_export_result_message
 
 if TYPE_CHECKING:
@@ -120,7 +120,10 @@ class CrowdAnkiExporter(Exporter):
 
         def on_failure(exception: Exception) -> None:
             logger.error("Ошибка при экспорте CrowdAnki V2: %s", exception, exc_info=True)
-            show_exception(parent=parent, exception=exception)
+            if isinstance(exception, CoreExecutionError):
+                showWarning(str(exception), parent=parent)
+            else:
+                show_exception(parent=parent, exception=exception)
 
         QueryOp(
             parent=parent,
