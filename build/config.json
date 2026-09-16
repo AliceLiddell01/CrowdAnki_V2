@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "addon": {
+    "package": "crowdanki_v2",
+    "name": "CrowdAnki V2",
+    "version": "0.1.0",
+    "target_anki_version": "26.09.2"
+  },
+  "core": {
+    "module": "github.com/AliceLiddell01/CrowdAnki_V2/core",
+    "binary_base_name": "crowdanki-core",
+    "source_dir": "cmd/crowdanki-core"
+  },
+  "platforms": {
+    "windows-amd64": {
+      "goos": "windows",
+      "goarch": "amd64",
+      "executable": "crowdanki-core.exe"
+    },
+    "linux-amd64": {
+      "goos": "linux",
+      "goarch": "amd64",
+      "executable": "crowdanki-core"
+    },
+    "darwin-amd64": {
+      "goos": "darwin",
+      "goarch": "amd64",
+      "executable": "crowdanki-core"
+    },
+    "darwin-arm64": {
+      "goos": "darwin",
+      "goarch": "arm64",
+      "executable": "crowdanki-core"
+    }
+  }
+}

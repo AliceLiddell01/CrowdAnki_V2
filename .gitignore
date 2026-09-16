@@ -1,0 +1,23 @@
+# Артефакты сборки
+dist/
+build/.staging/
+*.ankiaddon
+bin/
+*.exe
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.ruff_cache/
+
+# IDE и редакторы
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Операционная система
+Thumbs.db
+Desktop.ini
+.DS_Store
