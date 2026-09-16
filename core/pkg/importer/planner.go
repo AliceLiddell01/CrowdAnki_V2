@@ -28,20 +28,31 @@ func PlanImport(req PlanImportRequest) (*ImportPlanResult, error) {
 				}
 			}
 			return &ImportPlanResult{
-				CanApply:  false,
-				RootDecks: nil,
-				Summary: PlanSummary{
-					TotalConflicts: len(conflicts),
-				},
-				Conflicts: conflicts,
+				CanApply:    false,
+				RootDecks:   make([]string, 0),
+				Summary:     PlanSummary{TotalConflicts: len(conflicts)},
+				Conflicts:   conflicts,
+				Warnings:    make([]string, 0),
+				DeckOps:     make([]DeckOp, 0),
+				NoteTypeOps: make([]NoteTypeOp, 0),
+				NoteOps:     make([]NoteOp, 0),
+				CardOps:     make([]CardOp, 0),
+				MediaOps:    make([]MediaOp, 0),
 			}, nil
 		}
 		return nil, err
 	}
 
 	result := &ImportPlanResult{
-		CanApply:  true,
-		RootDecks: src.Manifest.RootDecks,
+		CanApply:    true,
+		RootDecks:   src.Manifest.RootDecks,
+		Conflicts:   make([]ConflictItem, 0),
+		Warnings:    make([]string, 0),
+		DeckOps:     make([]DeckOp, 0),
+		NoteTypeOps: make([]NoteTypeOp, 0),
+		NoteOps:     make([]NoteOp, 0),
+		CardOps:     make([]CardOp, 0),
+		MediaOps:    make([]MediaOp, 0),
 	}
 
 	// 1. Определение import scope

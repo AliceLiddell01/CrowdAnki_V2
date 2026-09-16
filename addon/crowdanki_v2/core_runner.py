@@ -112,10 +112,13 @@ def validate_import_plan_result(result: Any) -> dict:
         "total_conflicts",
     ]
     for sf in required_summary_fields:
-        if sf not in summary or not isinstance(summary[sf], int) or summary[sf] < 0:
+        if sf not in summary:
+            summary[sf] = 0
+        elif not isinstance(summary[sf], int) or summary[sf] < 0:
             raise CoreExecutionError(f"Повреждённый ответ Go core: summary['{sf}'] некорректно")
 
     for list_field in (
+        "root_decks",
         "conflicts",
         "warnings",
         "deck_ops",
@@ -124,9 +127,12 @@ def validate_import_plan_result(result: Any) -> dict:
         "card_ops",
         "media_ops",
     ):
-        if list_field not in result or not isinstance(result[list_field], list):
+        val = result.get(list_field)
+        if val is None:
+            result[list_field] = []
+        elif not isinstance(val, list):
             raise CoreExecutionError(
-                f"Повреждённый ответ Go core: отсутствует обязательный список '{list_field}'"
+                f"Повреждённый ответ Go core: поле '{list_field}' не является списком"
             )
 
     return result

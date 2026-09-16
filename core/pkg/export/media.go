@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -66,47 +68,101 @@ func CopyMediaFiles(mediaDir string, destMediaDir string, fileNames []string) ([
 		return nil, nil, 0, 0, fmt.Errorf("не удалось создать каталог media: %w", err)
 	}
 
+	numWorkers := runtime.NumCPU() * 2
+	if numWorkers < 4 {
+		numWorkers = 4
+	}
+	if numWorkers > 32 {
+		numWorkers = 32
+	}
+	if numWorkers > len(sortedNames) {
+		numWorkers = len(sortedNames)
+	}
+
+	type fileResult struct {
+		item    *MediaItem
+		missing string
+		err     error
+	}
+
+	jobs := make(chan string, len(sortedNames))
+	results := make(chan fileResult, len(sortedNames))
+
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for name := range jobs {
+				if err := ValidateMediaFilename(name); err != nil {
+					results <- fileResult{err: err}
+					return
+				}
+
+				srcPath := filepath.Join(mediaDir, name)
+				srcInfo, err := os.Stat(srcPath)
+				if err != nil {
+					if os.IsNotExist(err) {
+						results <- fileResult{missing: name}
+						continue
+					}
+					results <- fileResult{err: fmt.Errorf("ошибка доступа к исходному медиафайлу %s: %w", name, err)}
+					return
+				}
+
+				if srcInfo.IsDir() {
+					continue
+				}
+
+				dstPath := filepath.Join(cleanDestBase, name)
+				cleanDstAbs, err := filepath.Abs(dstPath)
+				if err != nil || (!strings.HasPrefix(cleanDstAbs, cleanDestBase+string(filepath.Separator)) && cleanDstAbs != cleanDestBase) {
+					results <- fileResult{err: fmt.Errorf("%w: целевой путь выходит за пределы media (%s)", ErrPathTraversal, name)}
+					return
+				}
+
+				dir := filepath.Dir(cleanDstAbs)
+				if dir != cleanDestBase {
+					if err := os.MkdirAll(dir, 0755); err != nil {
+						results <- fileResult{err: fmt.Errorf("не удалось создать подкаталог для медиафайла %s: %w", name, err)}
+						return
+					}
+				}
+
+				item, err := copyAndHashFile(srcPath, cleanDstAbs)
+				if err != nil {
+					results <- fileResult{err: fmt.Errorf("ошибка копирования медиафайла %s: %w", name, err)}
+					return
+				}
+				item.Name = name
+				results <- fileResult{item: &item}
+			}
+		}()
+	}
+
+	for _, name := range sortedNames {
+		jobs <- name
+	}
+	close(jobs)
+
+	wg.Wait()
+	close(results)
+
 	items := make([]MediaItem, 0, len(sortedNames))
 	missing := make([]string, 0)
 	var totalBytes int64
 
-	for _, name := range sortedNames {
-		if err := ValidateMediaFilename(name); err != nil {
-			return nil, nil, 0, 0, err
+	for res := range results {
+		if res.err != nil {
+			return nil, nil, 0, 0, res.err
 		}
-
-		srcPath := filepath.Join(mediaDir, name)
-		srcInfo, err := os.Stat(srcPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				missing = append(missing, name)
-				continue
-			}
-			return nil, nil, 0, 0, fmt.Errorf("ошибка доступа к исходному медиафайлу %s: %w", name, err)
+		if res.missing != "" {
+			missing = append(missing, res.missing)
 		}
-
-		if srcInfo.IsDir() {
-			continue
+		if res.item != nil {
+			items = append(items, *res.item)
+			totalBytes += res.item.Size
 		}
-
-		dstPath := filepath.Join(cleanDestBase, name)
-		cleanDstAbs, err := filepath.Abs(dstPath)
-		if err != nil || (!strings.HasPrefix(cleanDstAbs, cleanDestBase+string(filepath.Separator)) && cleanDstAbs != cleanDestBase) {
-			return nil, nil, 0, 0, fmt.Errorf("%w: целевой путь выходит за пределы media (%s)", ErrPathTraversal, name)
-		}
-
-		// Обеспечиваем создание поддиректорий, если имя содержит допустимую поддиректорию
-		if err := os.MkdirAll(filepath.Dir(cleanDstAbs), 0755); err != nil {
-			return nil, nil, 0, 0, fmt.Errorf("не удалось создать подкаталог для медиафайла %s: %w", name, err)
-		}
-
-		item, err := copyAndHashFile(srcPath, cleanDstAbs)
-		if err != nil {
-			return nil, nil, 0, 0, fmt.Errorf("ошибка копирования медиафайла %s: %w", name, err)
-		}
-		item.Name = name
-		items = append(items, item)
-		totalBytes += item.Size
 	}
 
 	// Детерминированная сортировка результатов

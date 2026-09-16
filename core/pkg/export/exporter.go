@@ -24,10 +24,14 @@ func ExecuteExport(req ExportRequest) (*ExportResult, error) {
 		return nil, fmt.Errorf("не удалось создать целевой каталог: %w", err)
 	}
 
-	// Создаем изолированный временный staging-каталог
-	stagingDir, err := os.MkdirTemp("", "crowdanki-export-staging-*")
+	// Создаем изолированный временный staging-каталог внутри целевой папки,
+	// чтобы гарантировать один том и быстрый атомарный rename без повторного копирования файлов
+	stagingDir, err := os.MkdirTemp(req.DestinationDir, ".crowdanki-staging-*")
 	if err != nil {
-		return nil, fmt.Errorf("не удалось создать временный staging-каталог: %w", err)
+		stagingDir, err = os.MkdirTemp("", "crowdanki-export-staging-*")
+		if err != nil {
+			return nil, fmt.Errorf("не удалось создать временный staging-каталог: %w", err)
+		}
 	}
 	defer func() {
 		_ = os.RemoveAll(stagingDir)
