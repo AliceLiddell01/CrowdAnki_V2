@@ -1,0 +1,142 @@
+name: Проверки и сборка проекта
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  proverki-go:
+    name: Проверки Go-ядра
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - name: Получение исходного кода
+        uses: actions/checkout@v4
+
+      - name: Настройка среды Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache: true
+
+      - name: Проверка форматирования gofmt
+        run: |
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "Файлы требуют форматирования через gofmt:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: Запуск статического анализа go vet
+        run: go vet ./...
+
+      - name: Запуск модульных тестов go test
+        run: go test -v ./...
+
+      - name: Проверочная компиляция исполняемого ядра
+        run: go build ./cmd/crowdanki-core
+
+  proverki-python:
+    name: Проверки Python-адаптера
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получение исходного кода
+        uses: actions/checkout@v4
+
+      - name: Настройка среды Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+
+      - name: Установка инструментов проверки
+        run: pip install ruff
+
+      - name: Запуск линтера Ruff
+        run: ruff check .
+
+      - name: Проверка форматирования Ruff
+        run: ruff format --check .
+
+      - name: Проверка синтаксиса Python-файлов
+        run: |
+          python -m py_compile addon/__init__.py
+          python -m py_compile addon/crowdanki_v2/__init__.py
+
+  proverki-powershell:
+    name: Проверки сценариев PowerShell
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Получение исходного кода
+        uses: actions/checkout@v4
+
+      - name: Установка модуля PSScriptAnalyzer
+        run: |
+          Install-Module -Name PSScriptAnalyzer -Scope CurrentUser -Force -SkipPublisherCheck
+
+      - name: Анализ сценариев через PSScriptAnalyzer
+        run: |
+          $issues = Invoke-ScriptAnalyzer -Path ./build/*.ps1
+          if ($issues) {
+              $issues | Format-Table -Property RuleName, Severity, ScriptName, Line, Message
+              $errorsOrWarnings = $issues | Where-Object { $_.Severity -in @('Error', 'Warning') }
+              if ($errorsOrWarnings) {
+                  throw "PSScriptAnalyzer обнаружил предупреждения или ошибки в скриптах."
+              }
+          }
+          Write-Output "Сценарии PowerShell соответствуют стандартам."
+
+  sborka-i-upakovka:
+    name: Сборка и верификация пакета аддона
+    runs-on: ubuntu-latest
+    needs:
+      - proverki-go
+      - proverki-python
+      - proverki-powershell
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Получение исходного кода
+        uses: actions/checkout@v4
+
+      - name: Настройка среды Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache: true
+
+      - name: Сборка пакета .ankiaddon
+        run: |
+          & ./build/build.ps1 -TargetOS linux -TargetArch amd64
+
+      - name: Проверка наличия и размера собранного аддона
+        run: |
+          $addonFiles = Get-ChildItem -Path ./dist -Filter *.ankiaddon
+          if ($addonFiles.Count -eq 0) {
+              throw "Файл .ankiaddon не найден в каталоге dist/"
+          }
+          foreach ($file in $addonFiles) {
+              if ($file.Length -eq 0) {
+                  throw "Собранный архив $($file.Name) имеет нулевой размер"
+              }
+              Write-Output "Найден валидный пакет: $($file.FullName) ($($file.Length) байт)"
+          }
+
+      - name: Загрузка артефакта аддона
+        uses: actions/upload-artifact@v4
+        with:
+          name: crowdanki_v2.ankiaddon
+          path: dist/*.ankiaddon
+          if-no-files-found: error
