@@ -70,6 +70,17 @@ jobs:
         run: |
           python -m py_compile addon/__init__.py
           python -m py_compile addon/crowdanki_v2/__init__.py
+          python -m py_compile addon/crowdanki_v2/collector.py
+          python -m py_compile addon/crowdanki_v2/core_runner.py
+          python -m py_compile addon/crowdanki_v2/dialog_adapter.py
+          python -m py_compile addon/crowdanki_v2/exporter.py
+          python -m py_compile addon/crowdanki_v2/media_resolver.py
+          python -m py_compile addon/crowdanki_v2/summary.py
+
+      - name: Запуск модульных тестов Python
+        env:
+          PYTHONPATH: addon
+        run: python -m unittest discover -s addon/crowdanki_v2/tests -v
 
   proverki-powershell:
     name: Проверки сценариев PowerShell
