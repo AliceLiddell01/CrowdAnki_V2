@@ -72,6 +72,34 @@ def validate_core_result(result: Any) -> dict:
     return result
 
 
+def get_subprocess_popen_kwargs(system_name: str | None = None) -> dict:
+    """Возвращает параметры subprocess.Popen для текущей или заданной ОС.
+
+    На Windows подавляет появление консольного окна через флаг CREATE_NO_WINDOW.
+    На других платформах (Linux, macOS) Windows-специфичные флаги не применяются.
+    """
+    sys_name = (system_name or platform.system()).lower()
+    kwargs: dict = {}
+    if sys_name == "windows":
+        create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        kwargs["creationflags"] = create_no_window
+    return kwargs
+
+
+def format_process_failure_message(returncode: int, stderr_text: str) -> str:
+    """Формирует понятное пользователю сообщение об ошибке завершения процесса."""
+    raw_uint32 = returncode & 0xFFFFFFFF
+    # 0xC000013A = 3221225786 = STATUS_CONTROL_C_EXIT
+    if raw_uint32 == 0xC000013A or returncode in (-2, 130):
+        return "Процесс экспорта был прерван пользователем или закрыт системой (0xC000013A)."
+    if returncode in (-15, -9, 143, 137):
+        return "Процесс экспорта был принудительно остановлен (сигнал завершения)."
+
+    if stderr_text:
+        return f"Ошибка при выполнении экспорта: {stderr_text}"
+    return f"Go-ядро непредвиденно завершилось (код возврата: {returncode})"
+
+
 def run_core_export(request_payload: dict) -> dict:
     """Запускает ядро CrowdAnki V2 с подкомандой export и передает входные данные через stdin."""
     core_path = get_core_binary_path()
@@ -84,6 +112,7 @@ def run_core_export(request_payload: dict) -> dict:
             logger.warning("Не удалось изменить права на исполняемый файл %s: %s", core_path, err)
 
     input_json = json.dumps(request_payload, ensure_ascii=False).encode("utf-8")
+    popen_kwargs = get_subprocess_popen_kwargs()
 
     try:
         proc = subprocess.Popen(
@@ -91,6 +120,7 @@ def run_core_export(request_payload: dict) -> dict:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            **popen_kwargs,
         )
     except OSError as err:
         raise CoreExecutionError(
@@ -101,9 +131,16 @@ def run_core_export(request_payload: dict) -> dict:
 
     if proc.returncode != 0:
         err_msg = stderr_bytes.decode("utf-8", errors="replace").strip()
-        raise CoreExecutionError(
-            f"Go-ядро завершилось с ошибкой (код {proc.returncode}): {err_msg}"
+        raw_code = proc.returncode
+        raw_hex = f"0x{raw_code & 0xFFFFFFFF:08X}"
+        logger.error(
+            "Процесс Go-ядра завершился с кодом %s (%s). Stderr: %s",
+            raw_code,
+            raw_hex,
+            err_msg,
         )
+        user_msg = format_process_failure_message(raw_code, err_msg)
+        raise CoreExecutionError(user_msg)
 
     try:
         raw_result = json.loads(stdout_bytes.decode("utf-8"))

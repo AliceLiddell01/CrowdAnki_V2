@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -344,5 +345,68 @@ func TestExport_PathTraversalProtection(t *testing.T) {
 	_, err := export.ExecuteExport(req)
 	if err == nil {
 		t.Fatalf("ожидалась ошибка path traversal, но экспорт прошел успешно")
+	}
+}
+
+func TestExport_LargeMediaWorkload(t *testing.T) {
+	tempDir := t.TempDir()
+	destDir := filepath.Join(tempDir, "export")
+	mediaSrcDir := filepath.Join(tempDir, "media_source")
+	if err := os.MkdirAll(mediaSrcDir, 0755); err != nil {
+		t.Fatalf("не удалось создать каталог media: %v", err)
+	}
+
+	const fileCount = 600
+	const missingCount = 15
+	mediaFiles := make([]string, 0, fileCount+missingCount)
+
+	for i := 0; i < fileCount; i++ {
+		fname := fmt.Sprintf("sound_%04d.mp3", i)
+		content := []byte(fmt.Sprintf("synthetic media payload data %d", i))
+		if err := os.WriteFile(filepath.Join(mediaSrcDir, fname), content, 0644); err != nil {
+			t.Fatalf("ошибка создания тестового файла %s: %v", fname, err)
+		}
+		mediaFiles = append(mediaFiles, fname)
+	}
+
+	for i := 0; i < missingCount; i++ {
+		mediaFiles = append(mediaFiles, fmt.Sprintf("non_existent_%04d.mp3", i))
+	}
+
+	req := helperCreateRichFixture(destDir, mediaSrcDir, true)
+	req.MediaFiles = mediaFiles
+
+	res, err := export.ExecuteExport(req)
+	if err != nil {
+		t.Fatalf("ExecuteExport large media workload завершился с ошибкой: %v", err)
+	}
+
+	if res.MediaFiles != fileCount {
+		t.Errorf("ожидалось %d скопированных медиафайлов, получено %d", fileCount, res.MediaFiles)
+	}
+	if res.MissingMedia != missingCount {
+		t.Errorf("ожидалось %d отсутствующих медиафайлов, получено %d", missingCount, res.MissingMedia)
+	}
+
+	// Проверяем manifest media.json
+	manifestData, err := os.ReadFile(filepath.Join(destDir, "media.json"))
+	if err != nil {
+		t.Fatalf("ошибка чтения media.json: %v", err)
+	}
+	var manifest export.MediaManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatalf("ошибка разбора media.json: %v", err)
+	}
+	if len(manifest.Files) != fileCount {
+		t.Errorf("в манифесте media.json ожидалось %d файлов, получено %d", fileCount, len(manifest.Files))
+	}
+
+	// Повторный экспорт в тот же каталог (проверка отсутствия deadlock и утечек дескрипторов)
+	resRepeat, err := export.ExecuteExport(req)
+	if err != nil {
+		t.Fatalf("повторный экспорт завершился с ошибкой: %v", err)
+	}
+	if resRepeat.MediaFiles != fileCount {
+		t.Errorf("при повторном экспорте ожидалось %d файлов, получено %d", fileCount, resRepeat.MediaFiles)
 	}
 }

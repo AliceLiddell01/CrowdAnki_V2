@@ -139,10 +139,6 @@ func copyAndHashFile(src, dst string) (MediaItem, error) {
 		return MediaItem{}, err
 	}
 
-	if err := out.Sync(); err != nil {
-		return MediaItem{}, err
-	}
-
 	shaHex := hex.EncodeToString(hasher.Sum(nil))
 	return MediaItem{
 		Size:   written,

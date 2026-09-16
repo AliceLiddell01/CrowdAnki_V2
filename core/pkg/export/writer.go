@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -317,6 +318,13 @@ func CommitStagedExport(stagingDir, destDir string, includeMedia bool) error {
 	} else {
 		srcMedia := filepath.Join(stagingDir, "media")
 		if _, err := os.Stat(srcMedia); err == nil {
+			// Если dstMedia еще не существует, пробуем мгновенный rename всего каталога
+			if _, statErr := os.Stat(dstMedia); os.IsNotExist(statErr) {
+				if renameErr := os.Rename(srcMedia, dstMedia); renameErr == nil {
+					return nil
+				}
+			}
+
 			if err := os.MkdirAll(dstMedia, 0755); err != nil {
 				return fmt.Errorf("не удалось создать целевой каталог media: %w", err)
 			}
@@ -334,7 +342,13 @@ func CommitStagedExport(stagingDir, destDir string, includeMedia bool) error {
 				if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 					return err
 				}
-				return copyFile(path, targetPath)
+				// Пробуем быстрое перемещение (rename) файла, при неудаче (cross-device) - потоковое копирование
+				if renameErr := os.Rename(path, targetPath); renameErr != nil {
+					if cpErr := copyFile(path, targetPath); cpErr != nil {
+						return cpErr
+					}
+				}
+				return nil
 			})
 			if err != nil {
 				return fmt.Errorf("ошибка переноса медиафайлов: %w", err)
@@ -362,11 +376,20 @@ func CommitStagedExport(stagingDir, destDir string, includeMedia bool) error {
 }
 
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0644)
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
 
 func writeJSONFile(filePath string, data any) error {

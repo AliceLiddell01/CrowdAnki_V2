@@ -20,9 +20,23 @@ except ImportError:
     gui_hooks = None  # type: ignore[assignment]
     show_exception = None  # type: ignore[assignment]
     ExportOptions = None  # type: ignore[assignment]
-    QueryOp = None  # type: ignore[assignment]
     showWarning = None  # type: ignore[assignment]
     tooltip = None  # type: ignore[assignment]
+
+    class QueryOp:  # type: ignore[no-redef]
+        def __init__(self, parent: Any = None, op: Any = None, success: Any = None):
+            self.parent = parent
+            self.op = op
+            self.success = success
+
+        def with_progress(self, label: str | None = None) -> QueryOp:
+            return self
+
+        def failure(self, on_failure: Any) -> QueryOp:
+            return self
+
+        def run_in_background(self) -> None:
+            pass
 
     class Exporter:  # type: ignore[no-redef]
         extension: str
@@ -129,4 +143,4 @@ class CrowdAnkiExporter(Exporter):
             parent=parent,
             op=background_op,
             success=on_success,
-        ).failure(on_failure).run_in_background()
+        ).with_progress(label="Экспорт CrowdAnki V2…").failure(on_failure).run_in_background()
