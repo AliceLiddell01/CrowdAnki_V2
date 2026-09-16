@@ -34,7 +34,7 @@ func ValidateMediaFilename(name string) error {
 	return nil
 }
 
-// CopyMediaFiles копирует разрешенные уникальные медиафайлы из mediaDir в destDir/media,
+// CopyMediaFiles копирует разрешенные уникальные медиафайлы из mediaDir в destMediaDir,
 // рассчитывая их размеры и SHA-256 хэши за один проход чтения.
 func CopyMediaFiles(mediaDir string, destMediaDir string, fileNames []string) ([]MediaItem, []string, int64, time.Duration, error) {
 	startTime := time.Now()
@@ -57,7 +57,12 @@ func CopyMediaFiles(mediaDir string, destMediaDir string, fileNames []string) ([
 		return []MediaItem{}, []string{}, 0, time.Since(startTime), nil
 	}
 
-	if err := os.MkdirAll(destMediaDir, 0755); err != nil {
+	cleanDestBase, err := filepath.Abs(destMediaDir)
+	if err != nil {
+		return nil, nil, 0, 0, fmt.Errorf("не удалось определить абсолютный путь media: %w", err)
+	}
+
+	if err := os.MkdirAll(cleanDestBase, 0755); err != nil {
 		return nil, nil, 0, 0, fmt.Errorf("не удалось создать каталог media: %w", err)
 	}
 
@@ -84,13 +89,18 @@ func CopyMediaFiles(mediaDir string, destMediaDir string, fileNames []string) ([
 			continue
 		}
 
-		dstPath := filepath.Join(destMediaDir, name)
+		dstPath := filepath.Join(cleanDestBase, name)
+		cleanDstAbs, err := filepath.Abs(dstPath)
+		if err != nil || (!strings.HasPrefix(cleanDstAbs, cleanDestBase+string(filepath.Separator)) && cleanDstAbs != cleanDestBase) {
+			return nil, nil, 0, 0, fmt.Errorf("%w: целевой путь выходит за пределы media (%s)", ErrPathTraversal, name)
+		}
+
 		// Обеспечиваем создание поддиректорий, если имя содержит допустимую поддиректорию
-		if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(cleanDstAbs), 0755); err != nil {
 			return nil, nil, 0, 0, fmt.Errorf("не удалось создать подкаталог для медиафайла %s: %w", name, err)
 		}
 
-		item, err := copyAndHashFile(srcPath, dstPath)
+		item, err := copyAndHashFile(srcPath, cleanDstAbs)
 		if err != nil {
 			return nil, nil, 0, 0, fmt.Errorf("ошибка копирования медиафайла %s: %w", name, err)
 		}

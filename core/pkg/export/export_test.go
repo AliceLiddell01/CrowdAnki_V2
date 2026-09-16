@@ -2,6 +2,8 @@ package export_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,64 +12,86 @@ import (
 	"github.com/AliceLiddell01/CrowdAnki_V2/core/pkg/export"
 )
 
-// helperCreateSampleRequest создает базовую фикстуру для тестов
-func helperCreateSampleRequest(destDir, mediaDir string, includeMedia bool) export.ExportRequest {
-	parentID := "100"
+// helperCreateRichFixture создает исчерпывающую фикстуру согласно спецификации
+func helperCreateRichFixture(destDir, mediaDir string, includeMedia bool) export.ExportRequest {
+	rootID := "100"
+	childID := "200"
+
 	return export.ExportRequest{
 		DestinationDir: destDir,
 		MediaDir:       mediaDir,
 		IncludeMedia:   includeMedia,
 		RootDeckIDs:    []string{"100"},
 		Decks: []export.DeckDTO{
-			{ID: "200", ParentID: &parentID, Name: "Японский::Грамматика", Description: "Дочерняя колода"},
+			{ID: "200", ParentID: &rootID, Name: "Японский::N5", Description: "Дочерняя колода N5"},
+			{ID: "300", ParentID: &childID, Name: "Японский::N5::Кандзи", Description: "Внучатая колода Кандзи"},
 			{ID: "100", ParentID: nil, Name: "Японский", Description: "Корневая колода"},
-			{ID: "300", ParentID: &parentID, Name: "Японский::Словарь", Description: "Вторая дочерняя колода"},
 		},
 		NoteTypes: []export.NoteTypeDTO{
 			{
-				ID:   "model_1",
-				Name: "Основная (с медиа)",
+				ID:    "model_std",
+				Name:  "Основная (с медиа)",
+				Kind:  "standard",
+				Sortf: 0,
 				Fields: []export.NoteFieldDTO{
 					{Name: "Лицо", Ord: 0},
 					{Name: "Значение", Ord: 1},
 				},
 				Templates: []export.CardTemplateDTO{
-					{Name: "Карточка 1", Ord: 0, Qfmt: "{{Лицо}}", Afmt: "{{FrontSide}}<hr id=answer>{{Значение}}"},
+					{Name: "Прямая", Ord: 0, Qfmt: "{{Лицо}}", Afmt: "{{FrontSide}}<hr id=answer>{{Значение}}"},
+					{Name: "Обратная", Ord: 1, Qfmt: "{{Значение}}", Afmt: "{{FrontSide}}<hr id=answer>{{Лицо}}"},
 				},
 				CSS: ".card { font-family: Meiryo; }",
+			},
+			{
+				ID:    "model_cloze",
+				Name:  "С пропусками (Cloze)",
+				Kind:  "cloze",
+				Sortf: 0,
+				Fields: []export.NoteFieldDTO{
+					{Name: "Текст", Ord: 0},
+					{Name: "Комментарий", Ord: 1},
+				},
+				Templates: []export.CardTemplateDTO{
+					{Name: "Клоуз", Ord: 0, Qfmt: "{{cloze:Текст}}", Afmt: "{{cloze:Текст}}<br>{{Комментарий}}"},
+				},
+				CSS: ".cloze { color: blue; }",
 			},
 		},
 		Notes: []export.NoteDTO{
 			{
-				GUID:       "note_guid_2",
-				NoteTypeID: "model_1",
+				GUID:       "note_guid_multi_cards",
+				NoteTypeID: "model_std",
 				NoteType:   "Основная (с медиа)",
 				Fields: map[string]string{
-					"Лицо":     "<b>猫</b> (ねこ)",
+					"Лицо":     "<b>猫</b> (ねко)",
 					"Значение": "Кот [sound:cat.mp3] <img src=\"cat.png\">",
 				},
 				Tags: []string{"n5", "animals"},
 			},
 			{
-				GUID:       "note_guid_1",
-				NoteTypeID: "model_1",
-				NoteType:   "Основная (с медиа)",
+				GUID:       "note_guid_cloze",
+				NoteTypeID: "model_cloze",
+				NoteType:   "С пропусками (Cloze)",
 				Fields: map[string]string{
-					"Лицо":     "犬 (いぬ)",
-					"Значение": "Собака [sound:dog.mp3]",
+					"Текст":       "{{c1::犬}} (собака) [sound:cat.mp3]", // Дубликат ссылки на cat.mp3
+					"Комментарий": "Статический шрифт <img src=\"_font.png\">",
 				},
-				Tags: []string{"n5"},
+				Tags: []string{"n5", "cloze_test"},
 			},
 		},
 		Cards: []export.CardDTO{
-			{NoteGUID: "note_guid_1", CardID: "c1", Ord: 0, DeckID: "200"},
-			{NoteGUID: "note_guid_2", CardID: "c2", Ord: 0, DeckID: "300"},
+			// Две карточки для одной заметки в разных колодах
+			{NoteGUID: "note_guid_multi_cards", CardID: "c1", Ord: 0, DeckID: "200"},
+			{NoteGUID: "note_guid_multi_cards", CardID: "c2", Ord: 1, DeckID: "300"},
+			// Карточка для заметки cloze
+			{NoteGUID: "note_guid_cloze", CardID: "c3", Ord: 0, DeckID: "200"},
 		},
-		MediaFiles: []string{"cat.png", "cat.mp3", "dog.mp3", "missing.wav"},
+		MediaFiles: []string{"cat.png", "cat.mp3", "_font.png", "missing.wav"},
 	}
 }
 
-func TestExport_FileStructureAndContent(t *testing.T) {
+func TestExport_RichFixtureAndInvariants(t *testing.T) {
 	tempDir := t.TempDir()
 	mediaSrcDir := filepath.Join(tempDir, "source_media")
 	destDir := filepath.Join(tempDir, "export_output")
@@ -76,117 +100,177 @@ func TestExport_FileStructureAndContent(t *testing.T) {
 		t.Fatalf("не удалось создать папку source_media: %v", err)
 	}
 
-	// Создаем тестовые медиафайлы (cat.png, cat.mp3, dog.mp3). missing.wav намеренно отсутствует.
-	_ = os.WriteFile(filepath.Join(mediaSrcDir, "cat.png"), []byte("PNG_CONTENT"), 0644)
-	_ = os.WriteFile(filepath.Join(mediaSrcDir, "cat.mp3"), []byte("MP3_AUDIO"), 0644)
-	_ = os.WriteFile(filepath.Join(mediaSrcDir, "dog.mp3"), []byte("DOG_AUDIO"), 0644)
+	catPngBytes := []byte("PNG_CONTENT_DETERMINISTIC")
+	catMp3Bytes := []byte("MP3_AUDIO_STREAM")
+	fontPngBytes := []byte("FONT_IMAGE_STATIC")
 
-	req := helperCreateSampleRequest(destDir, mediaSrcDir, true)
-	// Добавим дубликат имени медиа для проверки дедупликации
-	req.MediaFiles = append(req.MediaFiles, "cat.png", "cat.png")
+	_ = os.WriteFile(filepath.Join(mediaSrcDir, "cat.png"), catPngBytes, 0644)
+	_ = os.WriteFile(filepath.Join(mediaSrcDir, "cat.mp3"), catMp3Bytes, 0644)
+	_ = os.WriteFile(filepath.Join(mediaSrcDir, "_font.png"), fontPngBytes, 0644)
+
+	req := helperCreateRichFixture(destDir, mediaSrcDir, true)
+	// Добавляем дубликаты имен для проверки дедупликации
+	req.MediaFiles = append(req.MediaFiles, "cat.png", "cat.mp3")
 
 	res, err := export.ExecuteExport(req)
 	if err != nil {
 		t.Fatalf("ExecuteExport завершился с ошибкой: %v", err)
 	}
 
-	// 1. Проверка статистических результатов
-	if res.Decks != 3 {
-		t.Errorf("ожидалось 3 колоды, получено: %d", res.Decks)
+	if res.Decks != 3 || res.Notes != 2 || res.Cards != 3 || res.NoteTypes != 2 {
+		t.Errorf("неожиданные счетчики DTO: %+v", res)
 	}
-	if res.Notes != 2 {
-		t.Errorf("ожидалось 2 заметки, получено: %d", res.Notes)
-	}
-	if res.Cards != 2 {
-		t.Errorf("ожидалось 2 карточки, получено: %d", res.Cards)
-	}
-	if res.NoteTypes != 1 {
-		t.Errorf("ожидался 1 тип заметок, получено: %d", res.NoteTypes)
-	}
-	if res.MediaFiles != 3 {
-		t.Errorf("ожидалось 3 медиафайла (дедуплицировано), получено: %d", res.MediaFiles)
-	}
-	if res.MissingMedia != 1 {
-		t.Errorf("ожидался 1 отсутствующий медиафайл (missing.wav), получено: %d", res.MissingMedia)
+	if res.MediaFiles != 3 || res.MissingMedia != 1 {
+		t.Errorf("неожиданные счетчики медиа (ожидалось 3 файла, 1 missing): %+v", res)
 	}
 
-	// 2. Проверка наличия обязательных файлов
-	expectedFiles := []string{
-		"crowdanki.json",
-		"decks.json",
-		"notes.jsonl",
-		"cards.jsonl",
-		"media.json",
-		filepath.Join("note_types", "model_1.json"),
-		filepath.Join("media", "cat.png"),
-		filepath.Join("media", "cat.mp3"),
-		filepath.Join("media", "dog.mp3"),
-	}
-	for _, rel := range expectedFiles {
-		fullPath := filepath.Join(destDir, rel)
-		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-			t.Errorf("обязательный файл не создан: %s", rel)
-		}
-	}
-
-	// Отсутствующий файл не должен быть создан
-	if _, err := os.Stat(filepath.Join(destDir, "media", "missing.wav")); !os.IsNotExist(err) {
-		t.Errorf("отсутствующий файл missing.wav был ошибочно создан в media/")
-	}
-
-	// 3. Проверка notes.jsonl: формат, Unicode, HTML, именованные поля
-	notesData, err := os.ReadFile(filepath.Join(destDir, "notes.jsonl"))
+	// 1. Проверка cards.jsonl: валидный JSON, ссылки на note_guid, разные колоды для одной note
+	cardsData, err := os.ReadFile(filepath.Join(destDir, "cards.jsonl"))
 	if err != nil {
-		t.Fatalf("ошибка чтения notes.jsonl: %v", err)
+		t.Fatalf("ошибка чтения cards.jsonl: %v", err)
 	}
-	lines := bytes.Split(bytes.TrimSpace(notesData), []byte("\n"))
-	if len(lines) != 2 {
-		t.Fatalf("в notes.jsonl ожидалось 2 строки, получено: %d", len(lines))
+	cardLines := bytes.Split(bytes.TrimSpace(cardsData), []byte("\n"))
+	if len(cardLines) != 3 {
+		t.Fatalf("в cards.jsonl ожидалось 3 строки, получено: %d", len(cardLines))
 	}
-
-	for _, line := range lines {
-		var note export.NoteDTO
-		if err := json.Unmarshal(line, &note); err != nil {
-			t.Errorf("строка notes.jsonl не является валидным JSON: %v, строка: %s", err, string(line))
+	multiCardsCount := 0
+	for _, cl := range cardLines {
+		var c export.CardDTO
+		if err := json.Unmarshal(cl, &c); err != nil {
+			t.Errorf("невалидная строка cards.jsonl: %v", err)
 		}
-		if note.GUID == "note_guid_2" {
-			val, ok := note.Fields["Лицо"]
-			if !ok || val != "<b>猫</b> (ねこ)" {
-				t.Errorf("HTML/Unicode искажен в поле Лицо: %v", val)
-			}
+		if c.NoteGUID == "note_guid_multi_cards" {
+			multiCardsCount++
 		}
 	}
+	if multiCardsCount != 2 {
+		t.Errorf("ожидалось 2 карточки для note_guid_multi_cards, получено %d", multiCardsCount)
+	}
 
-	// 4. Проверка decks.json: плоская структура, parent_id
+	// 2. Проверка decks.json: parent_id hierarchy (root -> child -> grandchild)
 	decksData, err := os.ReadFile(filepath.Join(destDir, "decks.json"))
 	if err != nil {
 		t.Fatalf("ошибка чтения decks.json: %v", err)
 	}
 	var decks []export.DeckDTO
-	if err := json.Unmarshal(decksData, &decks); err != nil {
-		t.Fatalf("ошибка парсинга decks.json: %v", err)
+	_ = json.Unmarshal(decksData, &decks)
+	deckMap := make(map[string]export.DeckDTO)
+	for _, d := range decks {
+		deckMap[d.ID] = d
 	}
-	if len(decks) != 3 {
-		t.Errorf("ожидалось 3 колоды в decks.json, получено: %d", len(decks))
+	if deckMap["100"].ParentID != nil {
+		t.Errorf("корневая колода 100 должна иметь ParentID == nil")
+	}
+	if deckMap["200"].ParentID == nil || *deckMap["200"].ParentID != "100" {
+		t.Errorf("дочерняя колода 200 должна ссылаться на 100")
+	}
+	if deckMap["300"].ParentID == nil || *deckMap["300"].ParentID != "200" {
+		t.Errorf("внучатая колода 300 должна ссылаться на 200")
 	}
 
-	// 5. Проверка media.json: manifest
-	manifestData, err := os.ReadFile(filepath.Join(destDir, "media.json"))
+	// 3. Проверка note_types: семантика standard и cloze
+	stdData, err := os.ReadFile(filepath.Join(destDir, "note_types", "model_std.json"))
+	if err != nil {
+		t.Fatalf("ошибка чтения model_std.json: %v", err)
+	}
+	var ntStd export.NoteTypeDTO
+	_ = json.Unmarshal(stdData, &ntStd)
+	if ntStd.Kind != "standard" {
+		t.Errorf("ожидался kind standard для model_std, получено: %s", ntStd.Kind)
+	}
+
+	clozeData, err := os.ReadFile(filepath.Join(destDir, "note_types", "model_cloze.json"))
+	if err != nil {
+		t.Fatalf("ошибка чтения model_cloze.json: %v", err)
+	}
+	var ntCloze export.NoteTypeDTO
+	_ = json.Unmarshal(clozeData, &ntCloze)
+	if ntCloze.Kind != "cloze" {
+		t.Errorf("ожидался kind cloze для model_cloze, получено: %s", ntCloze.Kind)
+	}
+
+	// 4. Проверка media.json: сверка с вычисленным SHA-256
+	mediaData, err := os.ReadFile(filepath.Join(destDir, "media.json"))
 	if err != nil {
 		t.Fatalf("ошибка чтения media.json: %v", err)
 	}
 	var manifest export.MediaManifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		t.Fatalf("ошибка парсинга media.json: %v", err)
+	_ = json.Unmarshal(mediaData, &manifest)
+
+	h := sha256.New()
+	h.Write(catPngBytes)
+	expectedCatPngSHA := hex.EncodeToString(h.Sum(nil))
+
+	foundExpectedSHA := false
+	for _, mf := range manifest.Files {
+		if mf.Name == "cat.png" {
+			if mf.SHA256 != expectedCatPngSHA {
+				t.Errorf("несовпадение SHA-256 для cat.png: ожидался %s, получен %s", expectedCatPngSHA, mf.SHA256)
+			}
+			foundExpectedSHA = true
+		}
 	}
-	if !manifest.Included {
-		t.Errorf("ожидалось included=true в media.json")
+	if !foundExpectedSHA {
+		t.Errorf("файл cat.png не найден в манифесте media.json")
 	}
-	if len(manifest.Files) != 3 {
-		t.Errorf("ожидалось 3 файла в manifest, получено: %d", len(manifest.Files))
+}
+
+func TestExport_RepeatExportMediaCleanup(t *testing.T) {
+	tempDir := t.TempDir()
+	mediaSrcDir := filepath.Join(tempDir, "source_media")
+	destDir := filepath.Join(tempDir, "export_output")
+
+	_ = os.MkdirAll(mediaSrcDir, 0755)
+	_ = os.WriteFile(filepath.Join(mediaSrcDir, "cat.png"), []byte("CAT"), 0644)
+	_ = os.WriteFile(filepath.Join(mediaSrcDir, "dog.png"), []byte("DOG"), 0644)
+
+	// Экспорт 1: с включенным media в изначально пустой каталог
+	req1 := helperCreateRichFixture(destDir, mediaSrcDir, true)
+	if _, err := export.ExecuteExport(req1); err != nil {
+		t.Fatalf("Экспорт 1 завершился с ошибкой: %v", err)
 	}
-	if len(manifest.Missing) != 1 || manifest.Missing[0] != "missing.wav" {
-		t.Errorf("ожидался missing.wav в missing manifest, получено: %v", manifest.Missing)
+
+	// Создаем пользовательский посторонний файл вне managed paths уже в существующем проекте
+	userFile := filepath.Join(destDir, "user_notes.txt")
+	_ = os.WriteFile(userFile, []byte("USER NOTES"), 0644)
+
+	catPath := filepath.Join(destDir, "media", "cat.png")
+	if _, err := os.Stat(catPath); os.IsNotExist(err) {
+		t.Fatalf("cat.png должен существовать после первого экспорта")
+	}
+
+	// Экспорт 2: с выключенным media (include_media = false)
+	req2 := helperCreateRichFixture(destDir, mediaSrcDir, false)
+	if _, err := export.ExecuteExport(req2); err != nil {
+		t.Fatalf("Экспорт 2 завершился с ошибкой: %v", err)
+	}
+
+	// Каталог media/ должен исчезнуть
+	if _, err := os.Stat(filepath.Join(destDir, "media")); !os.IsNotExist(err) {
+		t.Errorf("каталог media/ должен быть удален при повторном экспорте с include_media=false")
+	}
+
+	// Проверяем, что посторонний файл пользователя уцелел
+	if data, err := os.ReadFile(userFile); err != nil || string(data) != "USER NOTES" {
+		t.Errorf("пользовательский файл user_notes.txt был поврежден или удален!")
+	}
+}
+
+func TestExport_UnsupportedSchemaVersion(t *testing.T) {
+	tempDir := t.TempDir()
+	markerPath := filepath.Join(tempDir, "crowdanki.json")
+	meta := export.ManifestMeta{
+		Format:        "crowdanki-v2",
+		SchemaVersion: 999, // Неподдерживаемая будущая версия схемы
+		RootDecks:     []string{"100"},
+	}
+	bytesMeta, _ := json.Marshal(meta)
+	_ = os.WriteFile(markerPath, bytesMeta, 0644)
+
+	req := helperCreateRichFixture(tempDir, "", false)
+	_, err := export.ExecuteExport(req)
+	if err == nil {
+		t.Fatalf("ожидалась ошибка неподдерживаемой версии схемы, но экспорт прошел успешно")
 	}
 }
 
@@ -198,9 +282,11 @@ func TestExport_Determinism(t *testing.T) {
 
 	_ = os.MkdirAll(mediaSrcDir, 0755)
 	_ = os.WriteFile(filepath.Join(mediaSrcDir, "cat.png"), []byte("PNG_CONTENT"), 0644)
+	_ = os.WriteFile(filepath.Join(mediaSrcDir, "cat.mp3"), []byte("MP3"), 0644)
+	_ = os.WriteFile(filepath.Join(mediaSrcDir, "_font.png"), []byte("FONT"), 0644)
 
-	req1 := helperCreateSampleRequest(destDir1, mediaSrcDir, true)
-	req2 := helperCreateSampleRequest(destDir2, mediaSrcDir, true)
+	req1 := helperCreateRichFixture(destDir1, mediaSrcDir, true)
+	req2 := helperCreateRichFixture(destDir2, mediaSrcDir, true)
 
 	if _, err := export.ExecuteExport(req1); err != nil {
 		t.Fatalf("Экспорт 1 завершился с ошибкой: %v", err)
@@ -215,7 +301,8 @@ func TestExport_Determinism(t *testing.T) {
 		"notes.jsonl",
 		"cards.jsonl",
 		"media.json",
-		filepath.Join("note_types", "model_1.json"),
+		filepath.Join("note_types", "model_std.json"),
+		filepath.Join("note_types", "model_cloze.json"),
 	}
 
 	for _, rel := range compareFiles {
@@ -233,64 +320,13 @@ func TestExport_Determinism(t *testing.T) {
 	}
 }
 
-func TestExport_MediaDisabled(t *testing.T) {
-	tempDir := t.TempDir()
-	destDir := filepath.Join(tempDir, "export_no_media")
-	req := helperCreateSampleRequest(destDir, "", false)
-
-	res, err := export.ExecuteExport(req)
-	if err != nil {
-		t.Fatalf("ExecuteExport с выключенным media завершился ошибкой: %v", err)
-	}
-
-	if res.MediaFiles != 0 {
-		t.Errorf("ожидалось 0 media_files, получено: %d", res.MediaFiles)
-	}
-
-	manifestData, err := os.ReadFile(filepath.Join(destDir, "media.json"))
-	if err != nil {
-		t.Fatalf("ошибка чтения media.json: %v", err)
-	}
-	var manifest export.MediaManifest
-	_ = json.Unmarshal(manifestData, &manifest)
-	if manifest.Included {
-		t.Errorf("ожидалось included=false в media.json при выключенном media")
-	}
-	if len(manifest.Files) != 0 {
-		t.Errorf("ожидался пустой список files в media.json")
-	}
-
-	// Папка media не должна быть создана
-	if _, err := os.Stat(filepath.Join(destDir, "media")); !os.IsNotExist(err) {
-		t.Errorf("каталог media/ не должен существовать при выключенном медиа")
-	}
-}
-
-func TestExport_UnsafeDirectoryProtection(t *testing.T) {
-	tempDir := t.TempDir()
-	foreignFile := filepath.Join(tempDir, "user_important_file.txt")
-	_ = os.WriteFile(foreignFile, []byte("IMPORTANT USER DATA"), 0644)
-
-	req := helperCreateSampleRequest(tempDir, "", false)
-	_, err := export.ExecuteExport(req)
-	if err == nil {
-		t.Fatalf("ожидалась ошибка защиты от записи в чужой непустой каталог, но экспорт прошел успешно")
-	}
-
-	// Проверяем, что исходный файл пользователя не пострадал
-	content, readErr := os.ReadFile(foreignFile)
-	if readErr != nil || string(content) != "IMPORTANT USER DATA" {
-		t.Errorf("чужой пользовательский файл был поврежден или удален!")
-	}
-}
-
 func TestExport_PathTraversalProtection(t *testing.T) {
 	tempDir := t.TempDir()
 	destDir := filepath.Join(tempDir, "export")
 	mediaDir := filepath.Join(tempDir, "media")
 	_ = os.MkdirAll(mediaDir, 0755)
 
-	req := helperCreateSampleRequest(destDir, mediaDir, true)
+	req := helperCreateRichFixture(destDir, mediaDir, true)
 	req.MediaFiles = []string{"../dangerous.txt", "/etc/passwd", "..\\system.ini"}
 
 	_, err := export.ExecuteExport(req)

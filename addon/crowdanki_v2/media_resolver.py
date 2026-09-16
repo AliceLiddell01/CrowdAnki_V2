@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from anki.collection import Collection
+
+logger = logging.getLogger("crowdanki_v2")
 
 
 def resolve_deck_media(
@@ -33,19 +36,35 @@ def resolve_deck_media(
                     for fn in found:
                         if fn:
                             media_set.add(fn)
-                except Exception:
-                    pass
+                except Exception as err:
+                    logger.error(
+                        "Ошибка извлечения медиафайлов из поля заметки (mid=%s): %s",
+                        mid,
+                        err,
+                        exc_info=True,
+                    )
+                    raise RuntimeError(
+                        f"Не удалось извлечь медиафайлы из содержимого заметки: {err}"
+                    ) from err
 
     # 2. Поиск статических медиаресурсов типов заметок (шрифты, логотипы шаблонов)
     for mid in notetype_ids:
-        try:
-            if hasattr(col.media, "extract_static_media_files"):
+        if hasattr(col.media, "extract_static_media_files"):
+            try:
                 static_files = col.media.extract_static_media_files(mid)
                 for fn in static_files:
                     if fn:
                         media_set.add(fn)
-        except Exception:
-            pass
+            except Exception as err:
+                logger.error(
+                    "Ошибка извлечения статических медиафайлов для типа заметки (mid=%s): %s",
+                    mid,
+                    err,
+                    exc_info=True,
+                )
+                raise RuntimeError(
+                    f"Не удалось извлечь статические медиафайлы типа заметки {mid}: {err}"
+                ) from err
 
     return sorted(media_set)
 

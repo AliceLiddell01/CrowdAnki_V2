@@ -51,6 +51,8 @@ type CardTemplateDTO struct {
 type NoteTypeDTO struct {
 	ID        string            `json:"id"`
 	Name      string            `json:"name"`
+	Kind      string            `json:"kind"` // "standard" или "cloze"
+	Sortf     int               `json:"sortf"`
 	Fields    []NoteFieldDTO    `json:"fields"`
 	Templates []CardTemplateDTO `json:"templates"`
 	CSS       string            `json:"css"`

@@ -3,14 +3,39 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, Any
 
-from anki.collection import DeckIdLimit
-from aqt import gui_hooks
-from aqt.errors import show_exception
-from aqt.import_export.exporting import Exporter, ExportOptions, _export_parent
-from aqt.operations import QueryOp
-from aqt.utils import tooltip
+try:
+    from anki.collection import DeckIdLimit, NoteIdsLimit
+    from aqt import gui_hooks
+    from aqt.errors import show_exception
+    from aqt.import_export.exporting import Exporter, ExportOptions
+    from aqt.operations import QueryOp
+    from aqt.utils import showWarning, tooltip
+except ImportError:
+    # Заглушки для среды без установленного Anki (например, модульное тестирование)
+    DeckIdLimit = None  # type: ignore[assignment,misc]
+    NoteIdsLimit = None  # type: ignore[assignment,misc]
+    gui_hooks = None  # type: ignore[assignment]
+    show_exception = None  # type: ignore[assignment]
+    ExportOptions = None  # type: ignore[assignment]
+    QueryOp = None  # type: ignore[assignment]
+    showWarning = None  # type: ignore[assignment]
+    tooltip = None  # type: ignore[assignment]
+
+    class Exporter:  # type: ignore[no-redef]
+        extension: str
+        show_deck_list = False
+        show_include_media = False
+
+        @staticmethod
+        def name() -> str:
+            return ""
+
+        def export(self, mw: Any, options: Any) -> None:
+            pass
+
 
 from .collector import collect_export_data
 from .core_runner import run_core_export
@@ -49,9 +74,17 @@ class CrowdAnkiExporter(Exporter):
     def export(self, mw: aqt.main.AnkiQt, options: ExportOptions) -> None:
         """Выполняет экспорт в фоновом потоке через QueryOp с вызовом Go-ядра."""
         options = gui_hooks.exporter_will_export(options, self)
-        parent = _export_parent(mw, options)
+        parent = options.parent or mw
 
-        # Определение выбранной колоды
+        # Проверка ограничений экспорта
+        if isinstance(options.limit, NoteIdsLimit):
+            showWarning(
+                "Экспорт выбранных заметок в CrowdAnki V2 в данный момент не поддерживается. "
+                "Пожалуйста, выберите экспорт колоды.",
+                parent=parent,
+            )
+            return
+
         root_deck_id = None
         if isinstance(options.limit, DeckIdLimit):
             root_deck_id = options.limit.deck_id
@@ -63,6 +96,8 @@ class CrowdAnkiExporter(Exporter):
             options.include_media,
         )
 
+        overall_start_time = time.monotonic()
+
         def background_op(col) -> dict:
             payload = collect_export_data(
                 col=col,
@@ -70,7 +105,12 @@ class CrowdAnkiExporter(Exporter):
                 include_media=options.include_media,
                 dest_dir=options.out_path,
             )
-            return run_core_export(payload)
+            res = run_core_export(payload)
+            # Переопределяем общее время экспорта полным временем
+            # от запуска операции до получения результата
+            total_elapsed_ms = int((time.monotonic() - overall_start_time) * 1000)
+            res["elapsed_ms"] = max(1, total_elapsed_ms)
+            return res
 
         def on_success(result: dict) -> None:
             gui_hooks.exporter_did_export(options, self)

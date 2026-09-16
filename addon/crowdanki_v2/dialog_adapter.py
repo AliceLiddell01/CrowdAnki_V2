@@ -1,7 +1,7 @@
 """Адаптер совместимости для стандартного окна ExportDialog в Anki.
 
 Позволяет для экспортера CrowdAnki V2:
-1. Заменять выбор файла на выбор каталога без привязки к имени колоды.
+1. Заменять выбор файла на выбор каталога с сохранением safety-проверок профиля Anki.
 2. Отображать блок предварительной сводки 'Будет экспортировано' с асинхронным подсчетом.
 
 Не модифицирует поведение диалога для других экспортеров.
@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,7 @@ from aqt.qt import (
     QLabel,
     QVBoxLayout,
 )
+from aqt.utils import showWarning
 
 from .collector import get_deck_and_child_ids
 from .exporter import CrowdAnkiExporter
@@ -28,6 +30,8 @@ from .summary import format_summary_text
 if TYPE_CHECKING:
     from anki.collection import Collection
     from aqt.import_export.exporting import ExportDialog
+
+logger = logging.getLogger("crowdanki_v2")
 
 
 class ExportDialogAdapter:
@@ -40,12 +44,10 @@ class ExportDialogAdapter:
         self._current_request_id: int = 0
 
         self._install_ui()
-        self._hook_dialog_methods()
+        self._hook_dialog()
 
     def _install_ui(self) -> None:
         """Добавляет блок сводки под чекбоксами диалога экспорта."""
-        frm = self.dialog.frm
-        # Ищем компоновку с чекбоксами (второй элемент вертикального layout диалога)
         layout = self.dialog.layout()
         if not layout:
             return
@@ -57,47 +59,74 @@ class ExportDialogAdapter:
         self.summary_box.setLayout(box_layout)
         self.summary_box.setVisible(False)
 
-        # Вставляем блок сводки перед вертикальным распорщиком
-        layout.insertWidget(2, self.summary_box)
+        # Находим позицию перед verticalSpacer или buttonBox
+        insert_idx = -1
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            w = item.widget()
+            if w and w == self.dialog.frm.buttonBox:
+                insert_idx = i
+                break
+            elif item.spacerItem():
+                insert_idx = i
+                break
+
+        if insert_idx >= 0:
+            layout.insertWidget(insert_idx, self.summary_box)
+        else:
+            layout.addWidget(self.summary_box)
 
         # Подписываемся на смену колоды и изменение чекбокса медиа
-        frm.deck.currentIndexChanged.connect(self._on_options_changed)
-        frm.includeMedia.stateChanged.connect(self._on_options_changed)
+        self.dialog.frm.deck.currentIndexChanged.connect(self._on_options_changed)
+        self.dialog.frm.includeMedia.stateChanged.connect(self._on_options_changed)
 
-    def _hook_dialog_methods(self) -> None:
-        """Перехватывает методы get_out_path и exporter_changed."""
-        orig_exporter_changed = self.dialog.exporter_changed
+    def _hook_dialog(self) -> None:
+        """Подключает обработчик смены формата и перехватывает get_out_path."""
+        # 1. Прямой коннект к activated и currentIndexChanged комбобокса формата
+        self.dialog.frm.format.currentIndexChanged.connect(self._on_format_changed)
+
+        # 2. Перехват get_out_path с сохранением оригинальных safety-проверок профиля
         orig_get_out_path = self.dialog.get_out_path
-
-        def patched_exporter_changed(idx: int) -> None:
-            orig_exporter_changed(idx)
-            is_crowdanki = isinstance(self.dialog.exporter, CrowdAnkiExporter)
-            if self.summary_box:
-                self.summary_box.setVisible(is_crowdanki)
-            if is_crowdanki:
-                self._update_summary_async()
 
         def patched_get_out_path() -> str | None:
             if isinstance(self.dialog.exporter, CrowdAnkiExporter):
-                # Для CrowdAnki V2 выбираем каталог
-                dest_dir = QFileDialog.getExistingDirectory(
-                    self.dialog,
-                    "Выберите каталог для экспорта CrowdAnki V2",
-                    "",
-                    QFileDialog.Option.ShowDirsOnly,
-                )
-                if not dest_dir:
-                    return None
-                return os.path.normpath(dest_dir)
+                while True:
+                    dest_dir = QFileDialog.getExistingDirectory(
+                        self.dialog,
+                        "Выберите каталог для экспорта CrowdAnki V2",
+                        "",
+                        QFileDialog.Option.ShowDirsOnly,
+                    )
+                    if not dest_dir:
+                        return None
+                    dest_path = os.path.normpath(dest_dir)
+                    # Проверка безопасности пути против базы профиля Anki
+                    if hasattr(self.dialog.mw.pm, "base"):
+                        base = os.path.realpath(self.dialog.mw.pm.base)
+                        if os.path.realpath(dest_path).startswith(base + os.sep):
+                            showWarning("Please choose a different export location.")
+                            continue
+                    return dest_path
             return orig_get_out_path()
 
-        self.dialog.exporter_changed = patched_exporter_changed  # type: ignore[assignment]
         self.dialog.get_out_path = patched_get_out_path  # type: ignore[assignment]
 
-        # Если диалог уже инициализирован на CrowdAnki V2
-        if isinstance(self.dialog.exporter, CrowdAnkiExporter):
-            if self.summary_box:
-                self.summary_box.setVisible(True)
+        # Инициализация первичного состояния
+        self._on_format_changed(self.dialog.frm.format.currentIndex())
+
+    def _on_format_changed(self, idx: int) -> None:
+        """Обрабатывает переключение формата экспорта."""
+        is_crowdanki = False
+        if hasattr(self.dialog, "exporter_classes") and 0 <= idx < len(
+            self.dialog.exporter_classes
+        ):
+            exp_cls = self.dialog.exporter_classes[idx]
+            is_crowdanki = issubclass(exp_cls, CrowdAnkiExporter)
+
+        if self.summary_box:
+            self.summary_box.setVisible(is_crowdanki)
+
+        if is_crowdanki:
             self._update_summary_async()
 
     def _on_options_changed(self, *_) -> None:
@@ -126,10 +155,12 @@ class ExportDialogAdapter:
             decks_count = len(deck_ids)
 
             card_ids: list[int] = []
-            for did in deck_ids:
-                d = col.decks.get(did)
+            if deck_id is not None:
+                d = col.decks.get(deck_id)
                 if d:
-                    card_ids.extend(col.find_cards(f'"deck:{d["name"]}"'))
+                    card_ids = col.find_cards(f'"deck:{d["name"]}"')
+            else:
+                card_ids = col.find_cards("")
 
             card_ids = sorted(set(card_ids))
             cards_count = len(card_ids)
@@ -189,7 +220,8 @@ class ExportDialogAdapter:
             )
             self.summary_label.setText(text)
 
-        def on_failure(_: Exception) -> None:
+        def on_failure(err: Exception) -> None:
+            logger.warning("Ошибка расчёта предварительной сводки: %s", err, exc_info=True)
             if request_id == self._current_request_id and self.summary_label:
                 self.summary_label.setText("Не удалось рассчитать сводку")
 

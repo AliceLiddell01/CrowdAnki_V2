@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// ExecuteExport координирует полный процесс экспорта CrowdAnki V2.
+// ExecuteExport координирует полный процесс экспорта CrowdAnki V2 с использованием staging-каталога.
 func ExecuteExport(req ExportRequest) (*ExportResult, error) {
 	totalStart := time.Now()
 
@@ -24,56 +24,56 @@ func ExecuteExport(req ExportRequest) (*ExportResult, error) {
 		return nil, fmt.Errorf("не удалось создать целевой каталог: %w", err)
 	}
 
-	// 2. Запись маркерного файла crowdanki.json
-	if err := WriteManifestMeta(req.DestinationDir, req.RootDeckIDs); err != nil {
+	// Создаем изолированный временный staging-каталог
+	stagingDir, err := os.MkdirTemp("", "crowdanki-export-staging-*")
+	if err != nil {
+		return nil, fmt.Errorf("не удалось создать временный staging-каталог: %w", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(stagingDir)
+	}()
+
+	// 2. Запись маркерного файла crowdanki.json в staging
+	if err := WriteManifestMeta(stagingDir, req.RootDeckIDs); err != nil {
 		return nil, fmt.Errorf("ошибка записи crowdanki.json: %w", err)
 	}
 
-	// 3. Запись decks.json
-	if err := WriteDecks(req.DestinationDir, req.Decks); err != nil {
+	// 3. Запись decks.json в staging
+	if err := WriteDecks(stagingDir, req.Decks); err != nil {
 		return nil, fmt.Errorf("ошибка записи decks.json: %w", err)
 	}
 
-	// 4. Запись notes.jsonl
-	if err := WriteNotesJSONL(req.DestinationDir, req.Notes); err != nil {
+	// 4. Запись notes.jsonl в staging
+	if err := WriteNotesJSONL(stagingDir, req.Notes); err != nil {
 		return nil, fmt.Errorf("ошибка записи notes.jsonl: %w", err)
 	}
 
-	// 5. Запись cards.jsonl
-	if err := WriteCardsJSONL(req.DestinationDir, req.Cards); err != nil {
+	// 5. Запись cards.jsonl в staging
+	if err := WriteCardsJSONL(stagingDir, req.Cards); err != nil {
 		return nil, fmt.Errorf("ошибка записи cards.jsonl: %w", err)
 	}
 
-	// 6. Запись note_types/*.json
-	if err := WriteNoteTypes(req.DestinationDir, req.NoteTypes); err != nil {
+	// 6. Запись note_types/*.json в staging
+	if err := WriteNoteTypes(stagingDir, req.NoteTypes); err != nil {
 		return nil, fmt.Errorf("ошибка записи note_types: %w", err)
 	}
 
-	// 7. Обработка медиафайлов
+	// 7. Обработка медиафайлов в staging
 	var mediaItems []MediaItem
 	var missingMedia []string
 	var mediaBytes int64
 	var mediaDuration time.Duration
 
 	if req.IncludeMedia && req.MediaDir != "" && len(req.MediaFiles) > 0 {
-		destMediaDir := filepath.Join(req.DestinationDir, "media")
+		stagedMediaDir := filepath.Join(stagingDir, "media")
 		var err error
-		mediaItems, missingMedia, mediaBytes, mediaDuration, err = CopyMediaFiles(req.MediaDir, destMediaDir, req.MediaFiles)
+		mediaItems, missingMedia, mediaBytes, mediaDuration, err = CopyMediaFiles(req.MediaDir, stagedMediaDir, req.MediaFiles)
 		if err != nil {
 			return nil, fmt.Errorf("ошибка при обработке медиафайлов: %w", err)
 		}
-
-		// Удаление устаревших управляемых медиафайлов от предыдущих экспортов
-		if err := CleanStaleManagedMedia(req.DestinationDir, mediaItems); err != nil {
-			return nil, fmt.Errorf("ошибка очистки устаревших медиафайлов: %w", err)
-		}
-	} else if req.IncludeMedia {
-		// Очистка каталога media, если он существовал ранее, но сейчас файлов нет
-		destMediaDir := filepath.Join(req.DestinationDir, "media")
-		_ = os.RemoveAll(destMediaDir)
 	}
 
-	// 8. Запись media.json
+	// 8. Запись media.json в staging
 	manifest := MediaManifest{
 		Included: req.IncludeMedia,
 		Files:    mediaItems,
@@ -85,8 +85,13 @@ func ExecuteExport(req ExportRequest) (*ExportResult, error) {
 	if manifest.Missing == nil {
 		manifest.Missing = []string{}
 	}
-	if err := WriteMediaManifest(req.DestinationDir, manifest); err != nil {
+	if err := WriteMediaManifest(stagingDir, manifest); err != nil {
 		return nil, fmt.Errorf("ошибка записи media.json: %w", err)
+	}
+
+	// 9. Фиксация результата: перенос только управляемых сущностей из staging в реальный destination
+	if err := CommitStagedExport(stagingDir, req.DestinationDir, req.IncludeMedia); err != nil {
+		return nil, fmt.Errorf("ошибка фиксации экспорта: %w", err)
 	}
 
 	totalDuration := time.Since(totalStart)

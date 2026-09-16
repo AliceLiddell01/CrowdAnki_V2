@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 __version__ = "0.1.0"
+
+logger = logging.getLogger("crowdanki_v2")
 
 if TYPE_CHECKING:
     from aqt.import_export.exporting import Exporter
@@ -22,7 +25,8 @@ def _on_exporters_list_did_initialize(exporters: list[type[Exporter]]) -> None:
         if CrowdAnkiExporter not in exporters:
             exporters.append(CrowdAnkiExporter)
     except Exception:
-        pass
+        logger.exception("Не удалось зарегистрировать CrowdAnkiExporter")
+        raise
 
 
 def _init_addon() -> None:
@@ -44,7 +48,7 @@ def _init_addon() -> None:
             try:
                 setup_export_dialog_adapter(self)
             except Exception:
-                pass
+                logger.exception("Ошибка подключения адаптера диалога экспорта")
 
         ExportDialog.__init__ = hooked_dialog_init
     except ImportError:

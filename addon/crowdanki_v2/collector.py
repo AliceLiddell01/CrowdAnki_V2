@@ -10,10 +10,14 @@ if TYPE_CHECKING:
 
 
 def get_deck_and_child_ids(col: Collection, root_deck_id: DeckId) -> list[DeckId]:
-    """Возвращает список ID корневой колоды и всех ее дочерних колод любого уровня вложенности."""
-    child_ids_and_names = col.decks.children(root_deck_id)
+    """Возвращает список ID корневой колоды и всех ее дочерних колод любого уровня вложенности.
+
+    В соответствии с публичным контрактом Anki 26.09.2 col.decks.children() возвращает
+    список кортежей (name, id), а не (id, name).
+    """
+    child_names_and_ids = col.decks.children(root_deck_id)
     deck_ids = [root_deck_id]
-    for did, _name in child_ids_and_names:
+    for _name, did in child_names_and_ids:
         deck_ids.append(did)
     return deck_ids
 
@@ -26,7 +30,7 @@ def collect_export_data(
 ) -> dict[str, Any]:
     """Собирает полное DTO коллекции для передачи в Go-ядро экспорта.
 
-    Использует только публичный API Anki: col.decks, col.find_notes, col.get_note, col.models.
+    Использует только публичный API Anki: col.decks, col.find_cards, col.get_note, col.models.
     Прямые запросы к SQLite не выполняются.
     """
     from .media_resolver import resolve_deck_media
@@ -36,10 +40,13 @@ def collect_export_data(
         target_deck_ids = get_deck_and_child_ids(col, root_deck_id)
         root_deck_ids_str = [str(root_deck_id)]
     else:
-        # Экспорт всех колод коллекции
+        # Экспорт всех колод коллекции: root_deck_ids содержит только настоящие корневые колоды
         all_deck_entries = col.decks.all_names_and_ids()
         target_deck_ids = [entry.id for entry in all_deck_entries]
-        root_deck_ids_str = [str(d) for d in target_deck_ids]
+        root_deck_ids_str = []
+        for entry in all_deck_entries:
+            if "::" not in entry.name:
+                root_deck_ids_str.append(str(entry.id))
 
     target_deck_ids_set = set(target_deck_ids)
 
@@ -68,14 +75,15 @@ def collect_export_data(
         )
 
     # 2. Поиск карточек и заметок в выбранных колодах
-    # Формируем поисковый запрос по всем колодам
     card_ids: list[int] = []
-    for did in target_deck_ids:
-        deck_dict = col.decks.get(did)
-        if deck_dict:
-            # col.find_cards с точным именем колоды
-            cids = col.find_cards(f'"deck:{deck_dict["name"]}"')
-            card_ids.extend(cids)
+    if root_deck_id is not None:
+        root_deck_dict = col.decks.get(root_deck_id)
+        if root_deck_dict:
+            # Запрос 'deck:RootDeck' в Anki автоматически включает все подколоды
+            card_ids = col.find_cards(f'"deck:{root_deck_dict["name"]}"')
+    else:
+        # Для всей коллекции
+        card_ids = col.find_cards("")
 
     card_ids = sorted(set(card_ids))
 
@@ -131,12 +139,16 @@ def collect_export_data(
     for c in cards_dto:
         c["note_guid"] = nid_to_guid.get(c.pop("_nid"), "")
 
-    # 4. Сбор спецификаций задействованных типов заметок
+    # 4. Сбор спецификаций задействованных типов заметок с семантикой типа (kind/type)
     note_types_dto: list[dict[str, Any]] = []
     for mid in sorted(used_model_ids):
         model = col.models.get(mid)
         if not model:
             continue
+
+        model_type_code = model.get("type", 0)
+        kind = "cloze" if model_type_code == 1 else "standard"
+        sortf = model.get("sortf", 0)
 
         fields_list: list[dict[str, Any]] = []
         for fld in model.get("flds", []):
@@ -164,6 +176,8 @@ def collect_export_data(
             {
                 "id": str(mid),
                 "name": model["name"],
+                "kind": kind,
+                "sortf": sortf,
                 "fields": fields_list,
                 "templates": templates_list,
                 "css": model.get("css", ""),
