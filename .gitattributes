@@ -1,0 +1,11 @@
+# Автоматическая обработка переносов строк
+* text=auto eol=lf
+
+# PowerShell-сценарии на Windows сохраняются с CRLF
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+
+# Бинарные файлы
+*.ankiaddon binary
+*.exe binary
