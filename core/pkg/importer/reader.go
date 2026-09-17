@@ -105,12 +105,18 @@ func ReadAndValidateSourceProject(sourceDir string) (*SourceProject, []string, e
 		}
 	}
 
-	// Проверка наличия корневых колод из manifest
-	for _, rootName := range manifest.RootDecks {
-		if _, ok := deckByName[rootName]; !ok {
-			validationErrors = append(validationErrors, fmt.Sprintf("Корневая колода '%s' из crowdanki.json отсутствует в decks.json", rootName))
+	// Проверка наличия корневых колод из manifest и резолвинг ID -> Name при необходимости
+	resolvedRoots := make([]string, 0, len(manifest.RootDecks))
+	for _, root := range manifest.RootDecks {
+		if _, ok := deckByName[root]; ok {
+			resolvedRoots = append(resolvedRoots, root)
+		} else if d, ok := deckByID[root]; ok {
+			resolvedRoots = append(resolvedRoots, d.Name)
+		} else {
+			validationErrors = append(validationErrors, fmt.Sprintf("Корневая колода '%s' из crowdanki.json отсутствует в decks.json", root))
 		}
 	}
+	manifest.RootDecks = resolvedRoots
 
 	// 3. Чтение note_types/
 	noteTypesDir := filepath.Join(sourceDir, "note_types")

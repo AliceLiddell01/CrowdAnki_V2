@@ -319,6 +319,32 @@ class ImportDialog(QDialog):
                 manifest_data = json.load(f)
             root_decks = manifest_data.get("root_decks", [])
 
+            # Если в root_decks указаны ID вместо имён, сопоставляем их с именами из decks.json
+            decks_file = os.path.join(source_dir, "decks.json")
+            if os.path.isfile(decks_file):
+                try:
+                    with open(decks_file, encoding="utf-8") as df:
+                        decks_list = json.load(df)
+                    deck_id_to_name = {
+                        d.get("id"): d.get("name")
+                        for d in decks_list
+                        if isinstance(d, dict) and d.get("id") and d.get("name")
+                    }
+                    deck_names = {
+                        d.get("name") for d in decks_list if isinstance(d, dict) and d.get("name")
+                    }
+                    resolved_roots = []
+                    for r in root_decks:
+                        if r in deck_names:
+                            resolved_roots.append(r)
+                        elif r in deck_id_to_name:
+                            resolved_roots.append(deck_id_to_name[r])
+                        else:
+                            resolved_roots.append(r)
+                    root_decks = resolved_roots
+                except Exception:
+                    pass
+
             # 2. Сбор snapshot текущей коллекции Anki
             dest_snap = collect_dest_snapshot(col, root_decks)
 

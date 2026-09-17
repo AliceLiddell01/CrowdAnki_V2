@@ -1113,3 +1113,35 @@ func TestImportPlanner_RoundTripFixture(t *testing.T) {
 
 	// Проверяем наличие предупреждений
 }
+
+func TestImportPlanner_RootDeckIDResolution(t *testing.T) {
+	// Проект, где в crowdanki.json в root_decks сохранен ID колоды вместо ее имени
+	projDir := createTestProject(t, func(dir string) {
+		manifest := export.ManifestMeta{
+			Format:        "crowdanki-v2",
+			SchemaVersion: 1,
+			RootDecks:     []string{"deck-root"}, // ID вместо "文法"
+		}
+		writeJSON(t, filepath.Join(dir, "crowdanki.json"), manifest)
+	})
+
+	req := PlanImportRequest{
+		SourceDir:    projDir,
+		MediaDir:     t.TempDir(),
+		IncludeMedia: false,
+		DestSnapshot: DestSnapshot{},
+	}
+
+	plan, err := PlanImport(req)
+	if err != nil {
+		t.Fatalf("PlanImport failed: %v", err)
+	}
+
+	if !plan.CanApply {
+		t.Fatalf("Ожидался CanApply=true при резолвинге ID корневой колоды, получены конфликты: %+v", plan.Conflicts)
+	}
+
+	if len(plan.RootDecks) != 1 || plan.RootDecks[0] != "文法" {
+		t.Errorf("Ожидалось разрешение ID 'deck-root' в имя '文法', получено: %+v", plan.RootDecks)
+	}
+}

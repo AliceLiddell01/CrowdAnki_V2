@@ -38,7 +38,19 @@ func ExecuteExport(req ExportRequest) (*ExportResult, error) {
 	}()
 
 	// 2. Запись маркерного файла crowdanki.json в staging
-	if err := WriteManifestMeta(stagingDir, req.RootDeckIDs); err != nil {
+	deckByID := make(map[string]string, len(req.Decks))
+	for _, d := range req.Decks {
+		deckByID[d.ID] = d.Name
+	}
+	rootDeckNames := make([]string, 0, len(req.RootDeckIDs))
+	for _, id := range req.RootDeckIDs {
+		if name, ok := deckByID[id]; ok {
+			rootDeckNames = append(rootDeckNames, name)
+		} else {
+			rootDeckNames = append(rootDeckNames, id)
+		}
+	}
+	if err := WriteManifestMeta(stagingDir, rootDeckNames); err != nil {
 		return nil, fmt.Errorf("ошибка записи crowdanki.json: %w", err)
 	}
 
