@@ -72,6 +72,72 @@ def validate_core_result(result: Any) -> dict:
     return result
 
 
+def validate_import_plan_result(result: Any) -> dict:
+    """Проверяет структурную корректность ответа планировщика импорта от Go-ядра."""
+    if not isinstance(result, dict):
+        raise CoreExecutionError(
+            "Повреждённый/неожиданный ответ Go core: ответ не является объектом"
+        )
+
+    if "can_apply" not in result or not isinstance(result["can_apply"], bool):
+        raise CoreExecutionError(
+            "Повреждённый ответ Go core: отсутствует или некорректно поле 'can_apply'"
+        )
+
+    if "summary" not in result or not isinstance(result["summary"], dict):
+        raise CoreExecutionError(
+            "Повреждённый ответ Go core: отсутствует или некорректно поле 'summary'"
+        )
+
+    summary = result["summary"]
+    required_summary_fields = [
+        "total_decks",
+        "total_notes",
+        "total_cards",
+        "total_note_types",
+        "created_decks",
+        "deleted_decks",
+        "created_notes",
+        "updated_notes",
+        "deleted_notes",
+        "created_cards",
+        "moved_cards",
+        "deleted_cards",
+        "created_note_types",
+        "updated_note_types",
+        "added_media",
+        "same_media",
+        "conflict_media",
+        "missing_media",
+        "total_conflicts",
+    ]
+    for sf in required_summary_fields:
+        if sf not in summary:
+            summary[sf] = 0
+        elif not isinstance(summary[sf], int) or summary[sf] < 0:
+            raise CoreExecutionError(f"Повреждённый ответ Go core: summary['{sf}'] некорректно")
+
+    for list_field in (
+        "root_decks",
+        "conflicts",
+        "warnings",
+        "deck_ops",
+        "note_type_ops",
+        "note_ops",
+        "card_ops",
+        "media_ops",
+    ):
+        val = result.get(list_field)
+        if val is None:
+            result[list_field] = []
+        elif not isinstance(val, list):
+            raise CoreExecutionError(
+                f"Повреждённый ответ Go core: поле '{list_field}' не является списком"
+            )
+
+    return result
+
+
 def get_subprocess_popen_kwargs(system_name: str | None = None) -> dict:
     """Возвращает параметры subprocess.Popen для текущей или заданной ОС.
 
@@ -151,3 +217,56 @@ def run_core_export(request_payload: dict) -> dict:
         ) from err
 
     return validate_core_result(raw_result)
+
+
+def run_core_import_plan(request_payload: dict) -> dict:
+    """Запускает ядро CrowdAnki V2 с подкомандой plan-import для построения ImportPlan."""
+    core_path = get_core_binary_path()
+
+    if platform.system().lower() != "windows":
+        try:
+            core_path.chmod(0o755)
+        except Exception as err:
+            logger.warning("Не удалось изменить права на исполняемый файл %s: %s", core_path, err)
+
+    input_json = json.dumps(request_payload, ensure_ascii=False).encode("utf-8")
+    popen_kwargs = get_subprocess_popen_kwargs()
+
+    try:
+        proc = subprocess.Popen(
+            [str(core_path), "plan-import"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            **popen_kwargs,
+        )
+    except OSError as err:
+        raise CoreExecutionError(
+            f"Не удалось запустить процесс Go-ядра CrowdAnki V2 ({core_path}): {err}"
+        ) from err
+
+    stdout_bytes, stderr_bytes = proc.communicate(input=input_json)
+
+    if proc.returncode != 0:
+        err_msg = stderr_bytes.decode("utf-8", errors="replace").strip()
+        raw_code = proc.returncode
+        raw_hex = f"0x{raw_code & 0xFFFFFFFF:08X}"
+        logger.error(
+            "Процесс Go-ядра (plan-import) завершился с кодом %s (%s). Stderr: %s",
+            raw_code,
+            raw_hex,
+            err_msg,
+        )
+        user_msg = format_process_failure_message(raw_code, err_msg)
+        raise CoreExecutionError(user_msg)
+
+    try:
+        raw_result = json.loads(stdout_bytes.decode("utf-8"))
+    except Exception as err:
+        stdout_preview = stdout_bytes[:500].decode("utf-8", errors="replace")
+        raise CoreExecutionError(
+            f"Не удалось разобрать ответ Go-ядра при планировании импорта: {err}. "
+            f"Вывод: {stdout_preview}"
+        ) from err
+
+    return validate_import_plan_result(raw_result)

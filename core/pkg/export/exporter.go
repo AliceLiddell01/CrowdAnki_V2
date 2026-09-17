@@ -24,17 +24,33 @@ func ExecuteExport(req ExportRequest) (*ExportResult, error) {
 		return nil, fmt.Errorf("не удалось создать целевой каталог: %w", err)
 	}
 
-	// Создаем изолированный временный staging-каталог
-	stagingDir, err := os.MkdirTemp("", "crowdanki-export-staging-*")
+	// Создаем изолированный временный staging-каталог внутри целевой папки,
+	// чтобы гарантировать один том и быстрый атомарный rename без повторного копирования файлов
+	stagingDir, err := os.MkdirTemp(req.DestinationDir, ".crowdanki-staging-*")
 	if err != nil {
-		return nil, fmt.Errorf("не удалось создать временный staging-каталог: %w", err)
+		stagingDir, err = os.MkdirTemp("", "crowdanki-export-staging-*")
+		if err != nil {
+			return nil, fmt.Errorf("не удалось создать временный staging-каталог: %w", err)
+		}
 	}
 	defer func() {
 		_ = os.RemoveAll(stagingDir)
 	}()
 
 	// 2. Запись маркерного файла crowdanki.json в staging
-	if err := WriteManifestMeta(stagingDir, req.RootDeckIDs); err != nil {
+	deckByID := make(map[string]string, len(req.Decks))
+	for _, d := range req.Decks {
+		deckByID[d.ID] = d.Name
+	}
+	rootDeckNames := make([]string, 0, len(req.RootDeckIDs))
+	for _, id := range req.RootDeckIDs {
+		if name, ok := deckByID[id]; ok {
+			rootDeckNames = append(rootDeckNames, name)
+		} else {
+			rootDeckNames = append(rootDeckNames, id)
+		}
+	}
+	if err := WriteManifestMeta(stagingDir, rootDeckNames); err != nil {
 		return nil, fmt.Errorf("ошибка записи crowdanki.json: %w", err)
 	}
 

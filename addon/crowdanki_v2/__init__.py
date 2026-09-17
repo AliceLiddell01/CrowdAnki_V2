@@ -51,6 +51,26 @@ def _init_addon() -> None:
                 logger.exception("Ошибка подключения адаптера диалога экспорта")
 
         ExportDialog.__init__ = hooked_dialog_init
+
+        # 3. Регистрация пункта меню импорта
+        def _on_main_window_did_init():
+            try:
+                from aqt import mw
+                from aqt.qt import QAction
+
+                from .import_dialog import ImportDialog
+
+                action = QAction("CrowdAnki V2: Импортировать…", mw)
+                action.triggered.connect(lambda: ImportDialog(mw).exec())
+
+                if hasattr(mw.form, "menuCol"):
+                    mw.form.menuCol.addAction(action)
+                elif hasattr(mw.form, "menuTools"):
+                    mw.form.menuTools.addAction(action)
+            except Exception:
+                logger.exception("Ошибка добавления пункта меню импорта CrowdAnki V2")
+
+        gui_hooks.main_window_did_init.append(_on_main_window_did_init)
     except ImportError:
         # Модули aqt недоступны (например, в изолированной тестовой среде без Anki)
         pass

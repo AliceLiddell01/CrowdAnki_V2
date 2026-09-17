@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"sync"
 )
 
 var (
@@ -329,6 +331,7 @@ func CommitStagedExport(stagingDir, destDir string, includeMedia bool) error {
 				return fmt.Errorf("не удалось создать целевой каталог media: %w", err)
 			}
 			stagedMediaFiles := make(map[string]bool)
+			var stagedPaths []string
 			err := filepath.Walk(srcMedia, func(path string, info os.FileInfo, err error) error {
 				if err != nil || info.IsDir() {
 					return err
@@ -338,21 +341,95 @@ func CommitStagedExport(stagingDir, destDir string, includeMedia bool) error {
 					return err
 				}
 				stagedMediaFiles[filepath.Clean(rel)] = true
-				targetPath := filepath.Join(dstMedia, rel)
-				if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-					return err
-				}
-				// Пробуем быстрое перемещение (rename) файла, при неудаче (cross-device) - потоковое копирование
-				if renameErr := os.Rename(path, targetPath); renameErr != nil {
-					if cpErr := copyFile(path, targetPath); cpErr != nil {
-						return cpErr
-					}
-				}
+				stagedPaths = append(stagedPaths, path)
 				return nil
 			})
 			if err != nil {
-				return fmt.Errorf("ошибка переноса медиафайлов: %w", err)
+				return fmt.Errorf("ошибка сбора медиафайлов: %w", err)
 			}
+
+			if len(stagedPaths) > 0 {
+				workers := runtime.NumCPU() * 2
+				if workers < 4 {
+					workers = 4
+				}
+				if workers > 32 {
+					workers = 32
+				}
+				if workers > len(stagedPaths) {
+					workers = len(stagedPaths)
+				}
+
+				jobs := make(chan string, len(stagedPaths))
+				for _, p := range stagedPaths {
+					jobs <- p
+				}
+				close(jobs)
+
+				var (
+					wg       sync.WaitGroup
+					firstErr error
+					errMu    sync.Mutex
+				)
+
+				for w := 0; w < workers; w++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						for path := range jobs {
+							errMu.Lock()
+							hasErr := firstErr != nil
+							errMu.Unlock()
+							if hasErr {
+								continue
+							}
+
+							rel, relErr := filepath.Rel(srcMedia, path)
+							if relErr != nil {
+								errMu.Lock()
+								if firstErr == nil {
+									firstErr = relErr
+								}
+								errMu.Unlock()
+								continue
+							}
+
+							targetPath := filepath.Join(dstMedia, rel)
+							targetDir := filepath.Dir(targetPath)
+							if targetDir != dstMedia {
+								if mkErr := os.MkdirAll(targetDir, 0755); mkErr != nil {
+									errMu.Lock()
+									if firstErr == nil {
+										firstErr = mkErr
+									}
+									errMu.Unlock()
+									continue
+								}
+							}
+
+							if renameErr := os.Rename(path, targetPath); renameErr != nil {
+								_ = os.Remove(targetPath)
+								if renameErr2 := os.Rename(path, targetPath); renameErr2 != nil {
+									if cpErr := copyFile(path, targetPath); cpErr != nil {
+										errMu.Lock()
+										if firstErr == nil {
+											firstErr = cpErr
+										}
+										errMu.Unlock()
+										continue
+									}
+								}
+							}
+						}
+					}()
+				}
+				wg.Wait()
+
+				if firstErr != nil {
+					return fmt.Errorf("ошибка переноса медиафайлов: %w", firstErr)
+				}
+			}
+
 			// Удаляем устаревшие файлы в dstMedia
 			_ = filepath.Walk(dstMedia, func(path string, info os.FileInfo, err error) error {
 				if err != nil || info.IsDir() {

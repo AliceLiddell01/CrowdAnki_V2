@@ -226,6 +226,19 @@ func TestExport_RichFixtureAndInvariants(t *testing.T) {
 	if !foundExpectedSHA {
 		t.Errorf("файл cat.png не найден в манифесте media.json")
 	}
+
+	// 6. Проверка crowdanki.json: root_decks должен содержать имя колоды, а не ID
+	markerData, err := os.ReadFile(filepath.Join(destDir, "crowdanki.json"))
+	if err != nil {
+		t.Fatalf("ошибка чтения crowdanki.json: %v", err)
+	}
+	var markerMeta export.ManifestMeta
+	if err := json.Unmarshal(markerData, &markerMeta); err != nil {
+		t.Fatalf("ошибка разбора crowdanki.json: %v", err)
+	}
+	if len(markerMeta.RootDecks) != 1 || markerMeta.RootDecks[0] != "Японский" {
+		t.Errorf("в crowdanki.json ожидалось имя корневой колоды 'Японский', получено: %+v", markerMeta.RootDecks)
+	}
 }
 
 func TestExport_RepeatExportMediaCleanup(t *testing.T) {
