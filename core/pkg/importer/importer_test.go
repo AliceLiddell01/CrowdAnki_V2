@@ -962,6 +962,64 @@ func TestImportPlanner_MediaScenarios(t *testing.T) {
 		}
 	})
 
+	t.Run("ConflictingMedia_StrategySkip", func(t *testing.T) {
+		projDir := createTestProject(t, nil)
+		ankiMediaDir := t.TempDir()
+		os.WriteFile(filepath.Join(ankiMediaDir, "sample.mp3"), []byte("different-audio-content"), 0644)
+
+		req := PlanImportRequest{
+			SourceDir:             projDir,
+			MediaDir:              ankiMediaDir,
+			IncludeMedia:          true,
+			MediaConflictStrategy: "skip",
+		}
+		plan, err := PlanImport(req)
+		if err != nil {
+			t.Fatalf("PlanImport failed: %v", err)
+		}
+		if plan.Summary.ConflictMedia != 1 {
+			t.Errorf("Expected ConflictMedia=1, got %d", plan.Summary.ConflictMedia)
+		}
+		if !plan.CanApply {
+			t.Errorf("Expected CanApply=true when strategy=skip, got false. Conflicts: %+v", plan.Conflicts)
+		}
+		if len(plan.Warnings) != 1 {
+			t.Errorf("Expected 1 warning for skipped media, got %d", len(plan.Warnings))
+		}
+		if len(plan.MediaOps) != 1 || plan.MediaOps[0].Action != "skip" {
+			t.Errorf("Expected MediaOp action 'skip', got %+v", plan.MediaOps)
+		}
+	})
+
+	t.Run("ConflictingMedia_StrategyOverwrite", func(t *testing.T) {
+		projDir := createTestProject(t, nil)
+		ankiMediaDir := t.TempDir()
+		os.WriteFile(filepath.Join(ankiMediaDir, "sample.mp3"), []byte("different-audio-content"), 0644)
+
+		req := PlanImportRequest{
+			SourceDir:             projDir,
+			MediaDir:              ankiMediaDir,
+			IncludeMedia:          true,
+			MediaConflictStrategy: "overwrite",
+		}
+		plan, err := PlanImport(req)
+		if err != nil {
+			t.Fatalf("PlanImport failed: %v", err)
+		}
+		if plan.Summary.ConflictMedia != 1 {
+			t.Errorf("Expected ConflictMedia=1, got %d", plan.Summary.ConflictMedia)
+		}
+		if !plan.CanApply {
+			t.Errorf("Expected CanApply=true when strategy=overwrite, got false. Conflicts: %+v", plan.Conflicts)
+		}
+		if len(plan.Warnings) != 1 {
+			t.Errorf("Expected 1 warning for overwritten media, got %d", len(plan.Warnings))
+		}
+		if len(plan.MediaOps) != 1 || plan.MediaOps[0].Action != "overwrite" {
+			t.Errorf("Expected MediaOp action 'overwrite', got %+v", plan.MediaOps)
+		}
+	})
+
 	t.Run("MediaDisabled_BypassesConflict", func(t *testing.T) {
 		projDir := createTestProject(t, nil)
 		ankiMediaDir := t.TempDir()

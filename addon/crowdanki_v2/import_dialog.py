@@ -13,6 +13,7 @@ try:
         QAbstractItemView,
         QButtonGroup,
         QCheckBox,
+        QComboBox,
         QCursor,
         QDialog,
         QFileDialog,
@@ -34,6 +35,7 @@ except ImportError:
     QAbstractItemView = None  # type: ignore[assignment]
     QButtonGroup = None  # type: ignore[assignment]
     QCheckBox = None  # type: ignore[assignment]
+    QComboBox = None  # type: ignore[assignment]
     QCursor = None  # type: ignore[assignment]
     QDialog = object  # type: ignore[assignment,misc]
     QFileDialog = None  # type: ignore[assignment]
@@ -205,12 +207,26 @@ class ImportDialog(QDialog):
 
         main_layout.addWidget(self.changes_group)
 
-        # 4. Опция импорта медиа
+        # 4. Опция импорта медиа и разрешение конфликтов
         options_layout = QHBoxLayout()
         self.media_checkbox = QCheckBox("Импортировать медиафайлы", self)
         self.media_checkbox.setChecked(True)
         self.media_checkbox.toggled.connect(self._on_media_toggled)
         options_layout.addWidget(self.media_checkbox)
+
+        options_layout.addSpacing(15)
+        self.media_conflict_label = QLabel("Конфликты медиа:", self)
+        options_layout.addWidget(self.media_conflict_label)
+
+        self.media_conflict_combo = QComboBox(self)
+        self.media_conflict_combo.addItem("Пропустить конфликтующие (сохранить файлы Anki)", "skip")
+        self.media_conflict_combo.addItem("Блокировать импорт при конфликтах", "block")
+        self.media_conflict_combo.addItem("Перезаписать файлы в коллекции Anki", "overwrite")
+        self.media_conflict_combo.currentIndexChanged.connect(
+            self._on_media_conflict_strategy_changed
+        )
+        options_layout.addWidget(self.media_conflict_combo)
+
         options_layout.addStretch(1)
         main_layout.addLayout(options_layout)
 
@@ -308,6 +324,11 @@ class ImportDialog(QDialog):
         self.status_label.setText("Анализ проекта…")
 
         include_media = self.media_checkbox.isChecked()
+        media_strategy = (
+            self.media_conflict_combo.currentData()
+            if hasattr(self, "media_conflict_combo") and self.media_conflict_combo
+            else "skip"
+        )
         source_dir = self.source_dir
 
         def background_op(col) -> dict[str, Any]:
@@ -354,6 +375,7 @@ class ImportDialog(QDialog):
                 "source_dir": source_dir,
                 "media_dir": media_dir,
                 "include_media": include_media,
+                "media_conflict_strategy": media_strategy,
                 "dest_snapshot": dest_snap,
             }
 
@@ -424,6 +446,7 @@ class ImportDialog(QDialog):
             + summary.get("deleted_decks", 0)
         )
         conflicts_count = self._calculate_active_conflicts_count(plan)
+        include_media = self.media_checkbox.isChecked()
 
         self.badge_added.setText(f"+ {created_total} Добавлено")
         self.badge_updated.setText(f"~ {updated_total} Обновлено")
@@ -449,10 +472,16 @@ class ImportDialog(QDialog):
             self.import_btn.setEnabled(False)
         else:
             self.conflict_label.setVisible(False)
-            has_changes = (created_total + updated_total + moved_total + deleted_total) > 0
-            self.import_btn.setEnabled(has_changes)
+            has_changes = (created_total + updated_total + moved_total + deleted_total) > 0 or (
+                include_media and summary.get("added_media", 0) > 0
+            )
+            self.import_btn.setEnabled(has_changes and plan.get("can_apply", False))
             if not has_changes:
                 self.status_label.setText("Изменений нет. Проект уже соответствует колоде Anki.")
+            elif len(plan.get("warnings", [])) > 0:
+                self.status_label.setText(
+                    f"Готово к импорту (предупреждений: {len(plan.get('warnings', []))})"
+                )
 
         # Заполнение дерева деталей
         self._populate_tree()
@@ -468,9 +497,20 @@ class ImportDialog(QDialog):
         return count
 
     def _on_media_toggled(self, checked: bool) -> None:
-        """Пересчитывает отображение при переключении чекбокса медиа."""
-        if self.current_plan:
+        """Пересчитывает отображение и перезапускает анализ при переключении чекбокса медиа."""
+        if hasattr(self, "media_conflict_label") and self.media_conflict_label:
+            self.media_conflict_label.setEnabled(checked)
+        if hasattr(self, "media_conflict_combo") and self.media_conflict_combo:
+            self.media_conflict_combo.setEnabled(checked)
+        if self.source_dir and not self._is_analyzing and not self._is_importing:
+            self._start_analysis()
+        elif self.current_plan:
             self._render_plan(self.current_plan)
+
+    def _on_media_conflict_strategy_changed(self) -> None:
+        """Перезапускает анализ при изменении стратегии разрешения конфликтов медиа."""
+        if self.source_dir and not self._is_analyzing and not self._is_importing:
+            self._start_analysis()
 
     def _set_filter(self, category_id: str) -> None:
         """Устанавливает категорию фильтрации дерева изменений."""
@@ -597,15 +637,24 @@ class ImportDialog(QDialog):
                 action_text = {
                     "add": "+ Добавление",
                     "same": "= Совпадает",
+                    "skip": "↷ Пропущен",
+                    "overwrite": "⚠ Перезапись",
                     "conflict": "! Конфликт",
                     "missing": "! Отсутствует",
                 }.get(action, action)
+                details = f"Размер: {format_bytes(mop.get('size', 0))}"
+                if action == "skip":
+                    details += " (сохранён существующий файл коллекции Anki)"
+                elif action == "overwrite":
+                    details += " (файл в коллекции будет перезаписан)"
+                elif action == "conflict":
+                    details += " (хэш отличается от файла в коллекции)"
                 item = QTreeWidgetItem(
                     [
                         "Медиа",
                         mop.get("name", ""),
                         action_text,
-                        f"Размер: {format_bytes(mop.get('size', 0))}",
+                        details,
                     ]
                 )
                 self.tree.addTopLevelItem(item)

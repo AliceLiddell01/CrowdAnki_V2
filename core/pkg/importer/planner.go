@@ -417,12 +417,16 @@ func PlanImport(req PlanImportRequest) (*ImportPlanResult, error) {
 				})
 				result.Summary.MissingMedia++
 				if req.IncludeMedia {
-					result.Conflicts = append(result.Conflicts, ConflictItem{
-						Category: "media",
-						Entity:   mf.Name,
-						Message:  fmt.Sprintf("Медиафайл «%s» указан в media.json, но физически отсутствует в каталоге media/ проекта", mf.Name),
-					})
-					result.Summary.TotalConflicts++
+					if req.MediaConflictStrategy == "skip" {
+						result.Warnings = append(result.Warnings, fmt.Sprintf("Медиафайл «%s» указан в media.json, но физически отсутствует в каталоге media/ проекта (пропущен)", mf.Name))
+					} else {
+						result.Conflicts = append(result.Conflicts, ConflictItem{
+							Category: "media",
+							Entity:   mf.Name,
+							Message:  fmt.Sprintf("Медиафайл «%s» указан в media.json, но физически отсутствует в каталоге media/ проекта", mf.Name),
+						})
+						result.Summary.TotalConflicts++
+					}
 				}
 				continue
 			}
@@ -454,8 +458,27 @@ func PlanImport(req PlanImportRequest) (*ImportPlanResult, error) {
 					})
 					result.Summary.SameMedia++
 				} else {
+					action := "conflict"
+					if req.IncludeMedia {
+						switch req.MediaConflictStrategy {
+						case "skip":
+							action = "skip"
+							result.Warnings = append(result.Warnings, fmt.Sprintf("Конфликт медиафайла «%s»: хэш в коллекции отличается от проекта (%s vs %s) — сохранён существующий файл коллекции", mf.Name, destHash, mf.SHA256))
+						case "overwrite":
+							action = "overwrite"
+							result.Warnings = append(result.Warnings, fmt.Sprintf("Конфликт медиафайла «%s»: хэш в коллекции отличается от проекта (%s vs %s) — файл будет перезаписан", mf.Name, destHash, mf.SHA256))
+						default: // "block" или пусто
+							action = "conflict"
+							result.Conflicts = append(result.Conflicts, ConflictItem{
+								Category: "media",
+								Entity:   mf.Name,
+								Message:  fmt.Sprintf("Конфликт медиафайла «%s»: хэш SHA-256 в коллекции Anki отличается от файла в проекте (%s vs %s)", mf.Name, destHash, mf.SHA256),
+							})
+							result.Summary.TotalConflicts++
+						}
+					}
 					result.MediaOps = append(result.MediaOps, MediaOp{
-						Action:       "conflict",
+						Action:       action,
 						Name:         mf.Name,
 						SourcePath:   srcFilePath,
 						Size:         mf.Size,
@@ -463,14 +486,6 @@ func PlanImport(req PlanImportRequest) (*ImportPlanResult, error) {
 						DestSHA256:   destHash,
 					})
 					result.Summary.ConflictMedia++
-					if req.IncludeMedia {
-						result.Conflicts = append(result.Conflicts, ConflictItem{
-							Category: "media",
-							Entity:   mf.Name,
-							Message:  fmt.Sprintf("Конфликт медиафайла «%s»: хэш SHA-256 в коллекции Anki отличается от файла в проекте (%s vs %s)", mf.Name, destHash, mf.SHA256),
-						})
-						result.Summary.TotalConflicts++
-					}
 				}
 			}
 		}

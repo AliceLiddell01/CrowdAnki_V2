@@ -9,6 +9,8 @@ type PlanImportRequest struct {
 	MediaDir string `json:"media_dir"`
 	// IncludeMedia определяет, запрашивается ли импорт медиафайлов.
 	IncludeMedia bool `json:"include_media"`
+	// MediaConflictStrategy определяет стратегию при несовпадении медиафайлов: "block", "skip", "overwrite".
+	MediaConflictStrategy string `json:"media_conflict_strategy"`
 	// DestSnapshot содержит снимок текущего состояния управляемого scope коллекции Anki.
 	DestSnapshot DestSnapshot `json:"dest_snapshot"`
 }

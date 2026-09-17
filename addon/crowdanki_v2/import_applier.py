@@ -235,7 +235,7 @@ def apply_import_plan(
     added_media_count = 0
     if include_media and hasattr(col, "media"):
         for m_op in plan.get("media_ops", []):
-            if m_op.get("action") == "add" and m_op.get("source_path"):
+            if m_op.get("action") in ("add", "overwrite") and m_op.get("source_path"):
                 try:
                     col.media.add_file(m_op["source_path"])
                     added_media_count += 1
